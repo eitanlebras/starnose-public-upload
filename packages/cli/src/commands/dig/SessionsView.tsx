@@ -34,7 +34,7 @@ export function SessionsView({ onBack, onSelect }: Props) {
   return (
     <Box flexDirection="column" paddingX={1}>
       <Box borderStyle="single" borderColor="#2A2A2A" paddingX={1}>
-        <Text color="#9D7F8C">sessions</Text>
+        <Text color="#c4607a">sessions</Text>
         <Text color="#505050">                      [enter open]  [esc back]</Text>
       </Box>
 
@@ -47,7 +47,7 @@ export function SessionsView({ onBack, onSelect }: Props) {
             <Box key={session.id} flexDirection="column" marginBottom={1}>
               <Box>
                 <Text
-                  backgroundColor={isSelected ? '#9D7F8C' : undefined}
+                  backgroundColor={isSelected ? '#c4607a' : undefined}
                   color={isSelected ? '#0F0F0F' : '#F0F0F0'}
                 >
                   {isSelected ? '►' : ' '}  {session.key}   {formatRelativeTime(session.created_at)}

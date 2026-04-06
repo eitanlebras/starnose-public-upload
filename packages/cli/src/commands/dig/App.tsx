@@ -86,7 +86,7 @@ export function App({ initialSessionId }: AppProps) {
       {/* Header */}
       <Box borderStyle="single" borderColor="#2A2A2A" paddingX={1} flexDirection="column">
         <Box justifyContent="space-between">
-          <Text color="#9D7F8C">starnose  v0.1.0</Text>
+          <Text color="#c4607a">starnose  v0.1.0</Text>
           <Text color="#505050">{sessionKey}  [? keys]</Text>
         </Box>
         {session && (
@@ -102,7 +102,7 @@ export function App({ initialSessionId }: AppProps) {
       {/* Active session notice */}
       {isActive && view === 'tree' && (
         <Box paddingX={1}>
-          <Text color="#9D7F8C">  ⚠ session in progress — use snose sense to watch live</Text>
+          <Text color="#c4607a">  ⚠ session in progress — use snose sense to watch live</Text>
         </Box>
       )}
       {isActive && view === 'tree' && (

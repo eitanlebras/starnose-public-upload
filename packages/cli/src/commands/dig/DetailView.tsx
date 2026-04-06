@@ -373,9 +373,9 @@ function MiniDetailOverlay({ data, width }: { data: MiniDetailData; width: numbe
   const boxWidth = Math.min(width - 4, 56);
   return (
     <Box flexDirection="column" paddingX={1} marginTop={1}>
-      <Box borderStyle="single" borderColor="#9D7F8C" flexDirection="column" paddingX={1} width={boxWidth}>
+      <Box borderStyle="single" borderColor="#c4607a" flexDirection="column" paddingX={1} width={boxWidth}>
         <Box justifyContent="space-between">
-          <Text color="#9D7F8C" bold>{data.title}</Text>
+          <Text color="#c4607a" bold>{data.title}</Text>
           <Text color="#505050">[esc to close]</Text>
         </Box>
         <Box marginTop={1} flexDirection="column">
@@ -608,7 +608,7 @@ export function DetailView({ call, onBack }: Props) {
     const isCollapsed = collapsed.has(section);
     const arrow = isCollapsed ? '▶' : '▼';
     const hasMissing = section === 'missing' && missingCtx.length > 0;
-    const color = hasMissing ? '#9D7F8C' : isFocused ? '#F0F0F0' : '#505050';
+    const color = hasMissing ? '#c4607a' : isFocused ? '#F0F0F0' : '#505050';
     const prefix = hasMissing ? '⚠ ' : '';
     const cursor = isFocused ? '► ' : '  ';
     const summary = isCollapsed ? `   ${sectionSummary(section)}` : '';
@@ -655,7 +655,7 @@ export function DetailView({ call, onBack }: Props) {
       }
       return (
         <Box key={item.id}>
-          <Text backgroundColor="#9D7F8C" color="#0F0F0F">{'► ' + text.padEnd(padW)}</Text>
+          <Text backgroundColor="#c4607a" color="#0F0F0F">{'► ' + text.padEnd(padW)}</Text>
         </Box>
       );
     }
@@ -666,7 +666,7 @@ export function DetailView({ call, onBack }: Props) {
       case 'file':
         return <Text key={item.id} color="#A0A0A0">      {item.label.padEnd(32)} {item.detail}</Text>;
       case 'more-files':
-        return <Text key={item.id} color="#9D7F8C">      {item.label}    {item.detail}</Text>;
+        return <Text key={item.id} color="#c4607a">      {item.label}    {item.detail}</Text>;
       case 'system-prompt':
         return <Text key={item.id} color="#A0A0A0">    {item.label.padEnd(20)} {item.detail}</Text>;
       case 'skill':
@@ -674,7 +674,7 @@ export function DetailView({ call, onBack }: Props) {
       case 'tool-group':
         return <Text key={item.id} color="#A0A0A0">    {item.label.padEnd(16)} {item.detail}</Text>;
       case 'missing-item':
-        return <Text key={item.id} color="#9D7F8C">    {item.label}: {item.detail}</Text>;
+        return <Text key={item.id} color="#c4607a">    {item.label}: {item.detail}</Text>;
       default:
         return null;
     }
@@ -725,7 +725,7 @@ export function DetailView({ call, onBack }: Props) {
     <Box flexDirection="column" paddingX={1}>
       {/* Header */}
       <Box borderStyle="single" borderColor="#2A2A2A" paddingX={1}>
-        <Text color="#9D7F8C">call {idx}  {call.summary}   </Text>
+        <Text color="#c4607a">call {idx}  {call.summary}   </Text>
         <Text color="#505050">[esc to close]</Text>
       </Box>
 
@@ -738,7 +738,7 @@ export function DetailView({ call, onBack }: Props) {
           <Text color="#A0A0A0">    cost      {formatCost(call.estimated_cost_usd)}</Text>
           <Text color="#A0A0A0">    model     {call.model}</Text>
           {totalIn > 50000 && convTokens > 0 && (
-            <Text color="#9D7F8C">    ⚠ {formatTokens(Math.max(0, convTokens))} is conversation history ({messages.length} turns)</Text>
+            <Text color="#c4607a">    ⚠ {formatTokens(Math.max(0, convTokens))} is conversation history ({messages.length} turns)</Text>
           )}
           {totalIn > 50000 && convTokens > 0 && (
             <Text color="#505050">      context is very large — compaction likely soon</Text>
@@ -785,7 +785,7 @@ export function DetailView({ call, onBack }: Props) {
         userMsgText ? (
           isSystemReminder(userMsgText) ? (
             <Box flexDirection="column">
-              <Text color="#9D7F8C">    system-reminder (injected by Claude Code automatically)</Text>
+              <Text color="#c4607a">    system-reminder (injected by Claude Code automatically)</Text>
               <Text color="#505050">    not a message you typed</Text>
               <Text color="#A0A0A0">    "{userMsgText.replace(/\n/g, ' ').slice(0, 80)}"</Text>
             </Box>

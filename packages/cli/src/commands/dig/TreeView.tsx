@@ -59,13 +59,13 @@ export function TreeView({ calls, selectedIndex, sessionKey, width }: Props) {
             {/* PRIMARY LINE — one line per call */}
             {isCompaction ? (
               <Box>
-                <Text color={isSelected ? '#9D7F8C' : '#505050'}>  {cursor} </Text>
-                <Text color="#9D7F8C">{idx}  {lat.padStart(7)}   {tok.padStart(10)}   {costStr.padStart(7)}   ⚡ {call.summary}</Text>
+                <Text color={isSelected ? '#c4607a' : '#505050'}>  {cursor} </Text>
+                <Text color="#c4607a">{idx}  {lat.padStart(7)}   {tok.padStart(10)}   {costStr.padStart(7)}   ⚡ {call.summary}</Text>
               </Box>
             ) : (
               <Box>
-                <Text color={isSelected ? '#9D7F8C' : '#505050'}>  {cursor} </Text>
-                <Text color={isFailed ? '#9D7F8C' : '#F0F0F0'}>{idx}</Text>
+                <Text color={isSelected ? '#c4607a' : '#505050'}>  {cursor} </Text>
+                <Text color={isFailed ? '#c4607a' : '#F0F0F0'}>{idx}</Text>
                 <Text color="#505050">  {lat.padStart(7)}   {tok.padStart(10)}   {costStr.padStart(7)}   {isFailed ? '✗ ' : ''}{call.summary}</Text>
               </Box>
             )}

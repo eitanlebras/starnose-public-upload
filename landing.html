@@ -75,16 +75,17 @@
     letter-spacing: 0.02em;
   }
 
+  .nav-logo-mark {
+    width: 20px;
+    height: 20px;
+    display: block;
+    flex-shrink: 0;
+  }
+
   .nav-right {
     display: flex;
     align-items: center;
     gap: 12px;
-  }
-
-  .nav-corner-logo {
-    width: 24px;
-    height: 24px;
-    flex-shrink: 0;
   }
 
   .nav-links {
@@ -115,7 +116,7 @@
     font-weight: 500 !important;
     border-left: none !important;
     margin-left: 8px;
-    border-radius: 2px;
+    border-radius: 0;
     height: 30px !important;
     padding: 0 14px !important;
   }
@@ -188,17 +189,55 @@
     max-width: 560px;
   }
 
-  .install-input {
+  .install-shell {
+    position: relative;
+    display: flex;
+    align-items: center;
     font-family: var(--mono);
-    font-size: 18px;
+    font-size: 19px;
     background: var(--bg-raised);
     border: 1px solid #2a2a2a;
-    padding: 18px 16px;
+    padding: 18px 52px 18px 16px;
     border-radius: 0;
     color: var(--text);
     width: 100%;
     line-height: 1;
   }
+
+  .install-shell:focus,
+  .install-shell:focus-visible,
+  .install-shell:active {
+    outline: none;
+    box-shadow: none;
+    border-color: #2a2a2a;
+  }
+
+  .install-prompt {
+    color: var(--accent);
+    margin-right: 12px;
+  }
+
+  .install-command {
+    color: var(--text);
+    user-select: none;
+  }
+
+  .inline-copy-btn {
+    position: absolute;
+    right: 12px;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 28px;
+    height: 28px;
+    border: 0;
+    background: transparent;
+    color: var(--text-muted);
+    cursor: pointer;
+    padding: 0;
+  }
+
+  .inline-copy-btn:hover { color: var(--text); }
+  .inline-copy-btn svg { width: 18px; height: 18px; display: block; margin: 0 auto; }
 
   .install-actions {
     display: flex;
@@ -215,6 +254,9 @@
     padding: 10px 14px;
     cursor: pointer;
     text-decoration: none;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
   }
 
   .hero-btn:hover {
@@ -239,40 +281,44 @@
     margin-top: 12px;
   }
 
-  /* ── LOGO CANVAS ────────────────────────── */
+  /* ── HERO TERMINAL ──────────────────────── */
   .hero-right {
     display: flex;
     justify-content: center;
     align-items: center;
   }
 
-  .logo-wrap {
-    position: relative;
+  .terminal-preview {
+    width: 100%;
+    max-width: 520px;
+    border: 1px solid #2a2a2a;
+    background: linear-gradient(180deg, #141414 0%, #0f0f0f 100%);
+  }
+
+  .terminal-head {
+    border-bottom: 1px solid #2a2a2a;
+    padding: 10px 12px;
     display: flex;
-    justify-content: center;
-    align-items: center;
+    justify-content: space-between;
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--text-muted);
   }
 
-  .logo-glow {
-    position: absolute;
-    width: 300px;
-    height: 300px;
-    background: radial-gradient(circle, var(--accent-glow-strong) 0%, transparent 70%);
-    border-radius: 50%;
-    animation: pulse 3s ease-in-out infinite;
+  .terminal-body {
+    margin: 0;
+    padding: 12px;
+    font-family: var(--mono);
+    font-size: 11px;
+    line-height: 1.55;
+    color: #a8a3a6;
+    white-space: pre;
+    overflow-x: auto;
   }
 
-  @keyframes pulse {
-    0%, 100% { opacity: 0.6; transform: scale(1); }
-    50% { opacity: 1; transform: scale(1.08); }
-  }
-
-  #logo-canvas {
-    position: relative;
-    z-index: 1;
-    width: 260px;
-    height: 260px;
-  }
+  .tp-accent { color: var(--accent); }
+  .tp-dim { color: #686368; }
+  .tp-strong { color: #d6d2d3; }
 
   /* ── SECTION HEADERS ────────────────────── */
   .section-header {
@@ -1090,6 +1136,7 @@
 <!-- ── NAV ──────────────────────────────────── -->
 <nav>
   <div class="nav-logo">
+    <img src="logo-mauve.svg" alt="starnose logo" class="nav-logo-mark">
     starnose
   </div>
   <div class="nav-right">
@@ -1099,7 +1146,6 @@
       <li><a href="#pricing">pricing</a></li>
       <li><a href="https://github.com" class="nav-cta">get started →</a></li>
     </ul>
-    <img src="logo-mauve.svg" alt="starnose logo" class="nav-corner-logo">
   </div>
 </nav>
 
@@ -1114,18 +1160,50 @@
           Starnose sits at the network layer — <strong>zero code changes,</strong> one environment variable. Every token, every skill, every compaction event. The black box, opened.
         </p>
         <div class="hero-cmd-row">
-          <input class="install-input" id="install-command" value="pip install starnose" readonly aria-label="Install command">
+          <div class="install-shell" aria-label="Install command">
+            <span class="install-prompt">$</span>
+            <span class="install-command" id="install-command">pip install starnose</span>
+            <button class="inline-copy-btn" type="button" id="copy-install-btn" aria-label="Copy install command">
+              <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                <path d="M8 8H5V19H16V16" stroke="currentColor" stroke-width="1.7"/>
+                <path d="M9 5H19V15H9V5Z" stroke="currentColor" stroke-width="1.7"/>
+              </svg>
+            </button>
+          </div>
           <div class="install-actions">
-            <button class="hero-btn hero-btn-primary" type="button" id="copy-install-btn">Copy</button>
-            <a class="hero-btn" href="https://github.com" target="_blank" rel="noopener noreferrer">Star on GitHub</a>
+            <a class="hero-btn" href="https://github.com" target="_blank" rel="noopener noreferrer">
+              <svg viewBox="0 0 24 24" width="15" height="15" fill="currentColor" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                <path d="M12 2C6.48 2 2 6.58 2 12.23C2 16.75 4.87 20.58 8.84 21.93C9.34 22.03 9.52 21.71 9.52 21.44C9.52 21.2 9.51 20.56 9.5 19.72C6.73 20.34 6.14 18.5 6.14 18.5C5.68 17.31 5.03 16.99 5.03 16.99C4.12 16.36 5.1 16.37 5.1 16.37C6.1 16.44 6.64 17.43 6.64 17.43C7.53 18.99 8.97 18.55 9.54 18.29C9.63 17.62 9.89 17.16 10.18 16.9C7.97 16.64 5.65 15.76 5.65 11.85C5.65 10.74 6.04 9.84 6.68 9.13C6.58 8.87 6.23 7.83 6.78 6.42C6.78 6.42 7.62 6.15 9.51 7.46C10.32 7.23 11.2 7.11 12.08 7.11C12.96 7.11 13.84 7.23 14.65 7.46C16.54 6.15 17.38 6.42 17.38 6.42C17.93 7.83 17.58 8.87 17.48 9.13C18.12 9.84 18.51 10.74 18.51 11.85C18.51 15.77 16.18 16.64 13.97 16.89C14.33 17.21 14.65 17.84 14.65 18.81C14.65 20.19 14.64 21.13 14.64 21.44C14.64 21.71 14.82 22.03 15.33 21.93C19.3 20.57 22.16 16.75 22.16 12.23C22.16 6.58 17.68 2 12 2Z"/>
+              </svg>
+              Star on GitHub
+            </a>
           </div>
         </div>
         <div class="hero-note" id="copy-feedback"># copy and run to get started.</div>
       </div>
       <div class="hero-right">
-        <div class="logo-wrap">
-          <div class="logo-glow"></div>
-          <canvas id="logo-canvas" width="500" height="500"></canvas>
+        <div class="terminal-preview" aria-label="starnose CLI preview">
+          <div class="terminal-head">
+            <span>snose sense</span>
+            <span>LIVE · space browse · q quit</span>
+          </div>
+          <pre class="terminal-body"><span class="tp-accent">starnose  v0.1.0</span>
+"Explore the starnose codebase"
+23 calls · 691.2k tok · $0.30 · 1m 56s · done
+
+<span class="tp-strong">(16)</span>  2.2s  <span class="tp-strong">46.1k tok</span>  $0.009  user → Bashx6, Readx21
+      bash: find /Users/eitanlebras/Documents/Gi… +6 lines
+      read: index.ts · db.ts · index.tsx +18 more
+<span class="tp-strong">(17)</span>  1.4s  <span class="tp-strong">46.4k tok</span>  $0.010  user → Bashx6, Readx22
+<span class="tp-strong">(18)</span>  40.4s <span class="tp-strong">50.7k tok</span>  $0.040  user → Agent(Explore), Readx8
+
+<span class="tp-dim">what it was given: system prompt 1.2k · conversation 44.9k (31 turns)</span>
+<span class="tp-dim">what it sent: no user message</span>
+<span class="tp-accent">decision:</span> Bashx6  starnose -type f -name "*.py" … +3 more
+
+<span class="tp-accent">done</span>
+23 calls · 691.2k tok · $0.30
+→ snose dig to inspect</pre>
         </div>
       </div>
     </div>
@@ -1138,7 +1216,7 @@
     <div class="section-header">
       <div>
         <span class="section-label">snose sense</span>
-        <h2 class="section-title">Live call feed.<br><em>Nothing hidden.</em></h2>
+        <h2 class="section-title">Live stream from the actual CLI.<br><em>Not a mock dashboard.</em></h2>
       </div>
     </div>
     <div class="cmd-section">
@@ -1147,52 +1225,52 @@
         <div class="cmd-tree">
           <div class="tree-cmd-name">snose sense</div>
 
-          <div class="tree-section-label">output streams</div>
+          <div class="tree-section-label">what snose sense actually shows</div>
 
           <div class="tree-line">
             <span class="tree-branch">├─ </span>
-            <span class="tree-key">calls</span>
+            <span class="tree-key">per-call row</span>
             <span class="tree-arrow">→</span>
-            <span class="tree-val green">live as they hit the proxy</span>
+            <span class="tree-val green">latency · tokens · cost · tool summary</span>
           </div>
           <div class="tree-line">
             <span class="tree-branch">├─ </span>
-            <span class="tree-key">skills</span>
+            <span class="tree-key">tool/file sublines</span>
             <span class="tree-arrow">→</span>
-            <span class="tree-val accent">loaded + token cost each</span>
+            <span class="tree-val accent">bash/read/agent + top files touched</span>
           </div>
           <div class="tree-line">
             <span class="tree-branch">├─ </span>
-            <span class="tree-key">status</span>
+            <span class="tree-key">mode + keys</span>
             <span class="tree-arrow">→</span>
-            <span class="tree-val">running / stuck / done</span>
+            <span class="tree-val">LIVE/BROWSE/DETAIL with space/enter/esc</span>
           </div>
           <div class="tree-line">
             <span class="tree-branch">└─ </span>
-            <span class="tree-key">compact</span>
+            <span class="tree-key">summary footer</span>
             <span class="tree-arrow">→</span>
-            <span class="tree-val yellow">fires + instructions lost</span>
+            <span class="tree-val yellow">calls · tok · $ · runtime → snose dig</span>
           </div>
 
-          <div class="tree-section-label">flags</div>
+          <div class="tree-section-label">commands you actually run</div>
 
           <div class="tree-line">
             <span class="tree-branch">├─ </span>
-            <span class="tree-key">--session</span>
+            <span class="tree-key">snose on</span>
             <span class="tree-arrow">→</span>
-            <span class="tree-val blue">filter to session id</span>
+            <span class="tree-val blue">start proxy + recording</span>
           </div>
           <div class="tree-line">
             <span class="tree-branch">├─ </span>
-            <span class="tree-key">--raw</span>
+            <span class="tree-key">snose sense</span>
             <span class="tree-arrow">→</span>
-            <span class="tree-val">full JSON per call</span>
+            <span class="tree-val">watch calls in real time</span>
           </div>
           <div class="tree-line">
             <span class="tree-branch">└─ </span>
-            <span class="tree-key">--cost</span>
+            <span class="tree-key">snose dig</span>
             <span class="tree-arrow">→</span>
-            <span class="tree-val accent">running dollar total</span>
+            <span class="tree-val accent">expand sections + inspect raw payloads</span>
           </div>
         </div>
 
@@ -1633,7 +1711,9 @@
 <script>
 (function() {
   const cv = document.getElementById('logo-canvas');
+  if (!cv) return;
   const g = cv.getContext('2d');
+  if (!g) return;
 
   g.fillStyle = '#0b0b0b';
   g.beginPath();
@@ -1734,12 +1814,10 @@ const copyFeedback = document.getElementById('copy-feedback');
 if (installCommandInput && copyInstallBtn && copyFeedback) {
   copyInstallBtn.addEventListener('click', async () => {
     try {
-      await navigator.clipboard.writeText(installCommandInput.value);
+      await navigator.clipboard.writeText(installCommandInput.textContent || '');
       copyFeedback.textContent = '# copied.';
-      copyInstallBtn.textContent = 'Copied';
       setTimeout(() => {
         copyFeedback.textContent = '# copy and run to get started.';
-        copyInstallBtn.textContent = 'Copy';
       }, 1400);
     } catch (err) {
       copyFeedback.textContent = '# clipboard blocked. copy manually.';

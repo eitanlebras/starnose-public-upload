@@ -17,7 +17,7 @@ import { DetailView } from './dig/DetailView.js';
 const C = {
   normal: '#F0F0F0',
   dim: '#505050',
-  mauve: '#9D7F8C',
+  mauve: '#c4607a',
   secondary: '#A0A0A0',
 };
 
@@ -242,7 +242,7 @@ function CallPrimaryLine({ call, allCalls, cursor }: {
   // Selected row: full mauve background, dark text
   if (cursor) {
     const line = `► ${idx}  ${lat}  ${tok}  ${cost}  ${isCompaction ? '⚡ ' : call.status === 'error' ? '✗ ' : ''}${summary}`;
-    return <Text backgroundColor="#9D7F8C" color="#0F0F0F">{line}</Text>;
+    return <Text backgroundColor="#c4607a" color="#0F0F0F">{line}</Text>;
   }
 
   const prefix = '  ';
