@@ -1,0 +1,8 @@
+.git
+node_modules
+packages
+tests
+.claude
+.env
+.DS_Store
+npm-debug.log
