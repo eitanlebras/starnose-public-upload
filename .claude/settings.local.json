@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm run:*)",
+      "Bash(node --import tsx packages/cli/src/commands/sense.tsx)",
+      "Bash(npx tsx:*)",
+      "Bash(timeout 3 node packages/cli/dist/index.js sense)",
+      "Bash(gtimeout 3 node packages/cli/dist/index.js sense)",
+      "Read(//Users/eitanlebras/.starnose/**)"
+    ]
+  }
+}

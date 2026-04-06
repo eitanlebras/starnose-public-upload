@@ -1,0 +1,26 @@
+{
+  "name": "starnose",
+  "version": "0.1.0",
+  "private": true,
+  "workspaces": [
+    "packages/proxy",
+    "packages/cli",
+    "packages/dashboard"
+  ],
+  "bin": {
+    "snose": "./packages/cli/dist/index.js",
+    "starnose": "./packages/cli/dist/index.js"
+  },
+  "scripts": {
+    "build": "npm run build --workspaces",
+    "build:proxy": "npm run build -w packages/proxy",
+    "build:cli": "npm run build -w packages/cli",
+    "build:dashboard": "npm run build -w packages/dashboard",
+    "test": "tsx tests/run-tests.ts",
+    "dev:proxy": "npm run dev -w packages/proxy",
+    "dev:dashboard": "npm run dev -w packages/dashboard"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><style>body{margin:0;background:#0d0d0d;display:flex;align-items:center;justify-content:center;min-height:100vh;}</style></head><body>
+<canvas id="c" width="500" height="500"></canvas>
+<script>
+const cv=document.getElementById('c'),g=cv.getContext('2d');
+g.fillStyle='#0d0d0d';g.beginPath();g.arc(250,250,245,0,Math.PI*2);g.fill();
+const COLOR='#c4607a',cx=250,cy=250;
+function spikeUp(bx,by,len,baseW){g.beginPath();g.moveTo(bx+baseW,by);g.bezierCurveTo(bx+baseW*0.85,by-len*0.55,bx+baseW*0.3,by-len*0.92,bx,by-len);g.bezierCurveTo(bx-baseW*0.3,by-len*0.92,bx-baseW*0.85,by-len*0.55,bx-baseW,by);g.closePath();g.fillStyle=COLOR;g.fill();}
+function spikeDown(bx,by,len,baseW){g.beginPath();g.moveTo(bx+baseW,by);g.bezierCurveTo(bx+baseW*0.85,by+len*0.55,bx+baseW*0.3,by+len*0.92,bx,by+len);g.bezierCurveTo(bx-baseW*0.3,by+len*0.92,bx-baseW*0.85,by+len*0.55,bx-baseW,by);g.closePath();g.fillStyle=COLOR;g.fill();}
+function spikeAngled(bx,by,len,baseW,adx,ady){const tx=bx+adx*len,ty=by+ady*len,px=-ady,py=adx;g.beginPath();g.moveTo(bx+px*baseW,by+py*baseW);g.bezierCurveTo(bx+px*baseW*0.85+adx*len*0.55,by+py*baseW*0.85+ady*len*0.55,tx+px*baseW*0.3,ty+py*baseW*0.3,tx,ty);g.bezierCurveTo(tx-px*baseW*0.3,ty-py*baseW*0.3,bx-px*baseW*0.85+adx*len*0.55,by-py*baseW*0.85+ady*len*0.55,bx-px*baseW,by-py*baseW);g.closePath();g.fillStyle=COLOR;g.fill();}
+function spikeReg(angleDeg,len,baseW){const SY=0.85,a=(angleDeg-90)*Math.PI/180;const fx=Math.cos(a),fy=Math.sin(a)*SY;const flen=Math.sqrt(fx*fx+fy*fy),fnx=fx/flen,fny=fy/flen;const px=-fny,py=fnx;const bx=cx+fnx*28,by=cy+fny*28,tx=cx+fnx*(28+len),ty=cy+fny*(28+len);g.beginPath();g.moveTo(bx+px*baseW,by+py*baseW);g.bezierCurveTo(bx+px*baseW*0.85+fnx*len*0.55,by+py*baseW*0.85+fny*len*0.55,tx+px*baseW*0.35,ty+py*baseW*0.35,tx,ty);g.bezierCurveTo(tx-px*baseW*0.35,ty-py*baseW*0.35,bx-px*baseW*0.85+fnx*len*0.55,by-py*baseW*0.85+fny*len*0.55,bx-px*baseW,by-py*baseW);g.closePath();g.fillStyle=COLOR;g.fill();}
+const angles=[58,80,102,124,146];
+angles.forEach(a=>{const rad=a*Math.PI/180,sw=Math.pow(Math.abs(Math.sin(rad)),0.4);spikeReg(a,44+sw*66,7+sw*8);});
+angles.forEach(a=>{const m=360-a;const rad=m*Math.PI/180,sw=Math.pow(Math.abs(Math.sin(rad)),0.4);spikeReg(m,44+sw*66,7+sw*8);});
+const tBase=cy-46,bBase=cy+46,ang=7*Math.PI/180;
+spikeUp(cx-42,tBase,81,12);spikeUp(cx+42,tBase,81,12);
+spikeUp(cx-13,tBase,28,12);spikeUp(cx+13,tBase,28,12);
+spikeAngled(cx-28,bBase,118,15,-Math.sin(ang),Math.cos(ang));
+spikeAngled(cx+28,bBase,118,15,Math.sin(ang),Math.cos(ang));
+spikeDown(cx-11,bBase,48,13);spikeDown(cx+11,bBase,48,13);
+const pw=56;g.beginPath();g.moveTo(cx-pw,tBase);g.lineTo(cx+pw,tBase);
+g.bezierCurveTo(cx+pw+20,tBase,cx+pw+20,bBase,cx+pw,bBase);
+g.lineTo(cx-pw,bBase);g.bezierCurveTo(cx-pw-20,bBase,cx-pw-20,tBase,cx-pw,tBase);
+g.closePath();g.fillStyle=COLOR;g.fill();
+</script></body></html>
