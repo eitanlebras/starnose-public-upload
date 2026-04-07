@@ -1,1 +1,2 @@
-__version__ = "0.1.1"
+# starnose — see what Claude Code is doing
+# https://starnose.dev
