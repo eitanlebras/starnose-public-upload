@@ -1,29 +1,173 @@
-import React, { useState, useEffect } from 'react';
-import { Box, Text, useInput } from 'ink';
+import React, { useState, useEffect, useMemo } from 'react';
+import { Box, Text, useInput, useStdout } from 'ink';
 import { SessionData } from './types.js';
 import { fetchApi } from '../../api.js';
-import { formatTokens, formatCost, formatRelativeTime, formatTime } from '../../format.js';
+import { formatTokens, formatCost, formatRelativeTime } from '../../format.js';
 
 interface Props {
   onBack: () => void;
   onSelect: (sessionId: string) => void;
+  currentSessionId?: string | null;
 }
 
-export function SessionsView({ onBack, onSelect }: Props) {
+type FilterKey = 'all' | 'today' | 'expensive' | 'failed' | 'long';
+const FILTERS: FilterKey[] = ['all', 'today', 'expensive', 'failed', 'long'];
+
+const ONE_DAY = 24 * 60 * 60 * 1000;
+
+function isGhost(s: SessionData): boolean {
+  if ((s.call_count ?? 0) === 0 && (s.total_tokens ?? 0) === 0) return true;
+  const t = (s.title ?? '').trim().toLowerCase();
+  if (t === 'quota' || t === 'untitled session') return true;
+  return false;
+}
+
+function matchesFilter(s: SessionData, f: FilterKey): boolean {
+  switch (f) {
+    case 'all':       return (s.call_count ?? 0) >= 1;
+    case 'today':     return Date.now() - s.created_at < ONE_DAY;
+    case 'expensive': return (s.total_cost ?? 0) > 0.5;
+    case 'failed':    return s.last_status === 'failed';
+    case 'long':      return (s.call_count ?? 0) > 20;
+  }
+}
+
+// ─── Custom filter syntax parser ─────────────────────────────
+
+type Token =
+  | { kind: 'cmp'; field: 'cost' | 'calls' | 'tok'; op: '>' | '<'; value: number }
+  | { kind: 'sub'; field: 'skill' | 'file'; needle: string }
+  | { kind: 'flag'; flag: 'failed' | 'active' | 'today' }
+  | { kind: 'text'; text: string };
+
+function parseNumberWithSuffix(raw: string): number | null {
+  const m = raw.trim().toLowerCase().match(/^([\d.]+)\s*([km])?$/);
+  if (!m) return null;
+  const n = parseFloat(m[1]);
+  if (isNaN(n)) return null;
+  if (m[2] === 'k') return n * 1000;
+  if (m[2] === 'm') return n * 1_000_000;
+  return n;
+}
+
+function tokenize(input: string): string[] {
+  const out: string[] = [];
+  let i = 0;
+  while (i < input.length) {
+    while (i < input.length && input[i] === ' ') i++;
+    if (i >= input.length) break;
+    if (input[i] === '"') {
+      const end = input.indexOf('"', i + 1);
+      if (end === -1) { out.push(input.slice(i + 1)); break; }
+      out.push(input.slice(i + 1, end));
+      i = end + 1;
+    } else {
+      let j = i;
+      while (j < input.length && input[j] !== ' ') j++;
+      out.push(input.slice(i, j));
+      i = j;
+    }
+  }
+  return out;
+}
+
+function parseQuery(input: string): Token[] {
+  const tokens: Token[] = [];
+  const freeText: string[] = [];
+  for (const raw of tokenize(input)) {
+    const lower = raw.toLowerCase();
+    if (lower === 'failed' || lower === 'active' || lower === 'today') {
+      tokens.push({ kind: 'flag', flag: lower as any });
+      continue;
+    }
+    // Incomplete filter tokens should be ignored while typing:
+    // cost:   cost:>   tok:   file:
+    if (/^(cost|calls|tok|skill|file):?$/i.test(raw) || /^(cost|calls|tok):[<>]?$/i.test(raw)) {
+      continue;
+    }
+
+    const m = raw.match(/^(cost|calls|tok|skill|file):(.+)$/i);
+    if (m) {
+      const field = m[1].toLowerCase();
+      const rest = m[2];
+      if (field === 'cost' || field === 'calls' || field === 'tok') {
+        const opMatch = rest.match(/^([<>])(.+)$/);
+        if (opMatch) {
+          const num = parseNumberWithSuffix(opMatch[2]);
+          if (num !== null) {
+            tokens.push({ kind: 'cmp', field: field as any, op: opMatch[1] as '>' | '<', value: num });
+            continue;
+          }
+        }
+        // Invalid/incomplete numeric comparator: ignore instead of treating as free text.
+        continue;
+      } else if (field === 'skill' || field === 'file') {
+        if (!rest.trim()) continue;
+        tokens.push({ kind: 'sub', field: field as any, needle: rest.toLowerCase() });
+        continue;
+      }
+    }
+    freeText.push(raw);
+  }
+  if (freeText.length > 0) {
+    tokens.push({ kind: 'text', text: freeText.join(' ').toLowerCase() });
+  }
+  return tokens;
+}
+
+function tokenMatches(s: SessionData, t: Token): boolean {
+  switch (t.kind) {
+    case 'cmp': {
+      let v: number;
+      if (t.field === 'cost') v = s.total_cost ?? 0;
+      else if (t.field === 'calls') v = s.call_count ?? 0;
+      else v = s.total_tokens ?? 0;
+      return t.op === '>' ? v > t.value : v < t.value;
+    }
+    case 'sub': {
+      // skill / file searches require richer session data; fall back to title match
+      const hay = ((s as any)[`${t.field}s`] ?? s.title ?? '').toString().toLowerCase();
+      return hay.includes(t.needle);
+    }
+    case 'flag':
+      if (t.flag === 'failed') return s.last_status === 'failed';
+      if (t.flag === 'active') return s.last_status === 'running' || s.status === 'active';
+      return Date.now() - s.created_at < ONE_DAY;
+    case 'text': {
+      const hay = `${s.title ?? ''} ${s.key ?? ''}`.toLowerCase();
+      return hay.includes(t.text);
+    }
+  }
+}
+
+function matchesQuery(s: SessionData, query: string): boolean {
+  const tokens = parseQuery(query);
+  if (tokens.length === 0) return true;
+  return tokens.every(t => tokenMatches(s, t));
+}
+
+function statusLabel(s: SessionData): { text: string; mauve: boolean } {
+  if (s.last_status === 'running' || s.status === 'active') return { text: '● active', mauve: true };
+  if (s.last_status === 'failed') return { text: '✗ failed', mauve: true };
+  return { text: '✓ done', mauve: false };
+}
+
+function truncate(s: string, max: number): string {
+  if (s.length <= max) return s;
+  return s.slice(0, max - 1) + '…';
+}
+
+export function SessionsView({ onBack, onSelect, currentSessionId }: Props) {
+  const pickSession = (sid: string) => onSelect(sid);
+  const { stdout } = useStdout();
+  const width = stdout?.columns ?? 80;
+  const height = stdout?.rows ?? 40;
+
   const [sessions, setSessions] = useState<SessionData[]>([]);
   const [selectedIndex, setSelectedIndex] = useState(0);
-
-  useInput((input, key) => {
-    if (key.escape) { onBack(); return; }
-    if (key.return && sessions.length > 0) {
-      const session = sessions[selectedIndex];
-      const isOld = Date.now() - session.created_at > 7 * 24 * 60 * 60 * 1000;
-      if (!isOld) onSelect(session.id);
-      return;
-    }
-    if (key.upArrow) setSelectedIndex(Math.max(0, selectedIndex - 1));
-    if (key.downArrow) setSelectedIndex(Math.min(sessions.length - 1, selectedIndex + 1));
-  });
+  const [filterIdx, setFilterIdx] = useState(0);
+  const [searching, setSearching] = useState(false);
+  const [query, setQuery] = useState('');
 
   useEffect(() => {
     fetchApi<SessionData[]>('/internal/sessions')
@@ -31,50 +175,196 @@ export function SessionsView({ onBack, onSelect }: Props) {
       .catch(() => {});
   }, []);
 
+  // Hide ghost sessions globally
+  const cleanSessions = useMemo(
+    () => sessions.filter(s => !isGhost(s)),
+    [sessions]
+  );
+
+  // Counts per filter (computed off cleanSessions)
+  const counts = useMemo(() => {
+    const c: Record<FilterKey, number> = { all: 0, today: 0, expensive: 0, failed: 0, long: 0 };
+    for (const f of FILTERS) c[f] = cleanSessions.filter(s => matchesFilter(s, f)).length;
+    return c;
+  }, [cleanSessions]);
+
+  const currentFilter = FILTERS[filterIdx];
+
+  // Filter + search
+  const visible = useMemo(() => {
+    let list = cleanSessions.filter(s => matchesFilter(s, currentFilter));
+    if (searching && query.trim()) {
+      list = list.filter(s => matchesQuery(s, query));
+    }
+    return list;
+  }, [cleanSessions, currentFilter, searching, query]);
+
+  // Clamp selection when list changes
+  useEffect(() => {
+    if (selectedIndex >= visible.length) {
+      setSelectedIndex(Math.max(0, visible.length - 1));
+    }
+  }, [visible.length, selectedIndex]);
+
+  useInput((input, key) => {
+    // ── Search input mode ──
+    if (searching) {
+      if (key.escape) {
+        setSearching(false);
+        setQuery('');
+        setSelectedIndex(0);
+        return;
+      }
+      if (key.return) {
+        if (visible.length > 0) pickSession(visible[selectedIndex].id);
+        return;
+      }
+      if (key.upArrow) { setSelectedIndex(i => Math.max(0, i - 1)); return; }
+      if (key.downArrow) { setSelectedIndex(i => Math.min(visible.length - 1, i + 1)); return; }
+      if (key.backspace || key.delete) {
+        setQuery(q => q.slice(0, -1));
+        setSelectedIndex(0);
+        return;
+      }
+      if (input && !key.ctrl && !key.meta && input.length === 1 && input >= ' ') {
+        setQuery(q => q + input);
+        setSelectedIndex(0);
+        return;
+      }
+      return;
+    }
+
+    // ── Browse mode ──
+    if (key.escape) { onBack(); return; }
+    if (input === '/') {
+      setSearching(true);
+      setQuery('');
+      setSelectedIndex(0);
+      return;
+    }
+    if (key.leftArrow) {
+      setFilterIdx(i => (i - 1 + FILTERS.length) % FILTERS.length);
+      setSelectedIndex(0);
+      return;
+    }
+    if (key.rightArrow) {
+      setFilterIdx(i => (i + 1) % FILTERS.length);
+      setSelectedIndex(0);
+      return;
+    }
+    if (key.return && visible.length > 0) {
+      pickSession(visible[selectedIndex].id);
+      return;
+    }
+    if (key.upArrow) setSelectedIndex(i => Math.max(0, i - 1));
+    if (key.downArrow) setSelectedIndex(i => Math.min(visible.length - 1, i + 1));
+  });
+
+  // ── Render ──
+
+  const titleMax = Math.max(20, Math.min(70, width - 8));
+  const fullWidth = Math.max(0, width - 4);
+  const sepLine = '─'.repeat(Math.max(20, Math.min(60, width - 6)));
+
+  const headerRows = searching ? 7 : 4;
+  const footerRows = searching ? 2 : 0;
+  const rowsPerItem = 3; // line1 + title + divider
+  const maxItems = Math.max(5, Math.floor((height - headerRows - footerRows) / rowsPerItem));
+  const start = Math.max(0, Math.min(selectedIndex - Math.floor(maxItems / 2), Math.max(0, visible.length - maxItems)));
+  const end = Math.min(visible.length, start + maxItems);
+  const windowed = visible.slice(start, end);
+
   return (
     <Box flexDirection="column" paddingX={1}>
-      <Box borderStyle="single" borderColor="#2A2A2A" paddingX={1}>
-        <Text color="#c4607a">sessions</Text>
-        <Text color="#505050">                      [enter open]  [esc back]</Text>
+      {/* Header / filter tabs */}
+      <Box borderStyle="single" borderColor="#2A2A2A" paddingX={1} flexDirection="column">
+        <Box>
+          <Text color="#e62050">sessions  </Text>
+          {FILTERS.map((f, i) => {
+            const isActive = i === filterIdx;
+            const label = `[ ${f} ${counts[f]} ]`;
+            return (
+              <Text key={f}>
+                <Text
+                  backgroundColor={isActive ? '#e62050' : undefined}
+                  color={isActive ? '#0F0F0F' : '#A0A0A0'}
+                >
+                  {label}
+                </Text>
+                <Text> </Text>
+              </Text>
+            );
+          })}
+        </Box>
+        <Text color="#505050">
+          {searching
+            ? '  type to filter · ↑↓ nav · enter open · esc clear'
+            : '  ←→ filter · / search · ↑↓ nav · enter open · esc back'}
+        </Text>
       </Box>
 
-      <Box flexDirection="column" marginTop={1} paddingX={2}>
-        {sessions.map((session, i) => {
+      {/* Search input */}
+      {searching && (
+        <Box flexDirection="column" paddingX={1} marginTop={1}>
+          <Box>
+            <Text color="#e62050">filter: </Text>
+            <Text color="#F0F0F0">{query}</Text>
+            <Text color="#505050">_</Text>
+          </Box>
+          <Text color="#505050">  cost:&gt;N  calls:&gt;N  tok:&gt;Nk  skill:name  file:name  failed  today</Text>
+        </Box>
+      )}
+
+      {/* Sessions list */}
+      <Box flexDirection="column" marginTop={1} paddingX={1}>
+        {visible.length === 0 && searching && query && (
+          <Text color="#505050">  no sessions match filter</Text>
+        )}
+        {visible.length === 0 && !(searching && query) && (
+          <Text color="#505050">  no sessions in this filter</Text>
+        )}
+
+        {windowed.map((session, idx) => {
+          const i = start + idx;
           const isSelected = i === selectedIndex;
-          const isOld = Date.now() - session.created_at > 7 * 24 * 60 * 60 * 1000;
+          const isLive = currentSessionId && session.id === currentSessionId;
+          const badge = isLive ? '● live' : '';
+          const status = statusLabel(session);
+          const titleText = `"${truncate(session.title ?? '', titleMax)}"`;
+          const line1 = `${badge}  ${session.key}  ${formatRelativeTime(session.created_at)}  ${session.call_count} calls  ${formatTokens(session.total_tokens)}  ${formatCost(session.total_cost)}  ${status.text}`;
+
+          if (isSelected) {
+            return (
+              <Box key={session.id} flexDirection="column">
+                <Text backgroundColor="#e62050" color="#0F0F0F">{('► ' + line1).padEnd(fullWidth)}</Text>
+                <Text backgroundColor="#e62050" color="#0F0F0F">{('  ' + titleText).padEnd(fullWidth)}</Text>
+                {i < visible.length - 1 && <Text color="#2A2A2A">  {sepLine}</Text>}
+              </Box>
+            );
+          }
 
           return (
-            <Box key={session.id} flexDirection="column" marginBottom={1}>
-              <Box>
-                <Text
-                  backgroundColor={isSelected ? '#c4607a' : undefined}
-                  color={isSelected ? '#0F0F0F' : '#F0F0F0'}
-                >
-                  {isSelected ? '►' : ' '}  {session.key}   {formatRelativeTime(session.created_at)}
-                </Text>
-              </Box>
-              <Box>
-                <Text color="#A0A0A0">   "{session.title}"</Text>
-              </Box>
-              <Box>
-                <Text color="#505050">
-                  {'   '}{session.call_count} calls · {formatTokens(session.total_tokens)} · {formatCost(session.total_cost)} · {session.last_status === 'running' ? '● active' : '✓ ' + (session.last_status ?? 'done')}
-                </Text>
-              </Box>
-              {isOld && (
-                <>
-                  <Text color="#505050">   ────────────────────────────────────────────────</Text>
-                  <Text color="#505050">   [locked — upgrade]</Text>
-                </>
-              )}
+            <Box key={session.id} flexDirection="column">
+              <Text>
+                <Text color={isLive ? '#e62050' : '#505050'}>  {badge ? `${badge}  ` : ''}</Text>
+                <Text color="#F0F0F0">{session.key}</Text>
+                <Text color="#505050">  {formatRelativeTime(session.created_at)}  </Text>
+                <Text color="#A0A0A0">{session.call_count} calls  {formatTokens(session.total_tokens)}  {formatCost(session.total_cost)}  </Text>
+                <Text color={status.mauve ? '#e62050' : '#A0A0A0'}>{status.text}</Text>
+              </Text>
+              <Text color="#505050">          {titleText}</Text>
+              {i < visible.length - 1 && <Text color="#2A2A2A">  {sepLine}</Text>}
             </Box>
           );
         })}
-
-        {sessions.length === 0 && (
-          <Text color="#505050">no sessions yet</Text>
-        )}
       </Box>
+
+      {/* Footer */}
+      {searching && (
+        <Box marginTop={1} paddingX={1}>
+          <Text color="#505050">{visible.length} session{visible.length === 1 ? '' : 's'} match  ·  esc clear  ·  enter open</Text>
+        </Box>
+      )}
     </Box>
   );
 }
