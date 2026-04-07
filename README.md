@@ -1,42 +1,72 @@
 # starnose
 
-See what Claude Code is reading, thinking, and doing.
-Understand every decision. Know if it's stuck.
+[![npm](https://img.shields.io/npm/v/snose?color=c4607a&label=npm)](https://www.npmjs.com/package/snose)
+[![PyPI](https://img.shields.io/pypi/v/starnose?color=c4607a&label=pypi)](https://pypi.org/project/starnose/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-c4607a)](LICENSE)
+
+See exactly what Claude Code is reading, thinking, and doing.
+Every token, every skill load, every compaction event — live at the network layer.
 
 ```bash
+# npm
 npx snose on
-# add the printed PATH export to ~/.zshrc
-source ~/.zshrc
 
-# use claude normally
-claude "refactor the auth module"
-
-# in another terminal — watch it work
-snose sense
-
-# after — understand every decision
-snose dig
+# pip
+pip install starnose && snose on
 ```
 
 ## commands
 
-`snose on` · `snose off` · `snose status`
-`snose sense` · `snose dig`
+| command | what it does |
+|---|---|
+| `snose on` | start proxy daemon on :3399, set `ANTHROPIC_BASE_URL` |
+| `snose off` | stop daemon, clear env var |
+| `snose status` | show running state, call count, session cost |
+| `snose sense` | live feed — every call as it happens, loop detection, compaction alerts |
+| `snose dig` | keyboard-driven inspector — expand any call, see token breakdown, search history |
 
 Both `snose` and `starnose` work as binary names.
 
 ## how it works
 
-Starnose sits between Claude Code and the Anthropic API as an HTTP proxy.
-One env var (`ANTHROPIC_BASE_URL`), zero code changes to Claude Code.
-Every call is recorded to SQLite with full system prompt parsing,
-thinking block extraction, compaction detection, and missing context tracking.
+Starnose is an HTTP proxy that sits between Claude Code and the Anthropic API.
+One environment variable (`ANTHROPIC_BASE_URL=http://localhost:3399`), zero code changes.
+Every request and response is recorded to a local SQLite database with full system prompt parsing,
+skill token breakdown, compaction detection, and missing context tracking.
+
+Nothing leaves your machine.
 
 ## install
 
+**npm (no install needed):**
 ```bash
-npm install
-npm run build
+npx snose on
 ```
 
-MIT. starnose.dev
+**pip:**
+```bash
+pip install starnose
+snose on
+```
+
+**from source:**
+```bash
+git clone https://github.com/eitanlebras/starnose
+cd starnose
+npm install && npm run build
+snose on
+```
+
+## usage
+
+```bash
+snose on                    # start recording
+claude "refactor auth"      # work normally
+snose sense                 # watch live in another terminal
+snose dig                   # inspect sessions after
+snose off                   # stop recording
+```
+
+---
+
+MIT · [starnose.dev](https://starnose.dev)
