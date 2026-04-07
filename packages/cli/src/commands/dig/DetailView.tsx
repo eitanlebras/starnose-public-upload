@@ -1,42 +1,53 @@
 import React, { useState } from 'react';
-import { Box, Text, useInput, useStdout } from 'ink';
+import { Box, Text, useInput } from 'ink';
 import { CallData } from './types.js';
 import { formatTokens, formatCost, formatLatency, circledNumber } from '../../format.js';
 
 interface Props {
   call: CallData;
-  onBack: () => void;
+  prevCall?: CallData;
+  isSimilarToPrev?: boolean;
+  width: number;
+  isActive?: boolean;
+  onBlur?: () => void;
 }
 
-type SectionKey = 'stats' | 'read' | 'thinking' | 'given' | 'sent' | 'missing' | 'decision' | 'request' | 'response';
+type SectionKey =
+  | 'given'
+  | 'changed'
+  | 'stats'
+  | 'read'
+  | 'thinking'
+  | 'sent'
+  | 'missing'
+  | 'decision';
 
-const SECTION_ORDER: SectionKey[] = ['stats', 'read', 'thinking', 'given', 'sent', 'missing', 'decision', 'request', 'response'];
+const SECTION_ORDER: SectionKey[] = [
+  'given', 'changed', 'stats', 'read', 'thinking', 'sent', 'missing', 'decision',
+];
 
-const NAVIGABLE_SECTIONS: Set<SectionKey> = new Set(['read', 'given', 'decision', 'missing']);
+const SECTION_LABELS: Record<SectionKey, string> = {
+  given: 'WHAT IT WAS GIVEN',
+  changed: 'WHAT CHANGED',
+  stats: 'STATS',
+  read: 'WHAT IT READ',
+  thinking: 'WHAT IT WAS THINKING',
+  sent: 'WHAT YOU SENT',
+  missing: 'WHAT IT WAS MISSING',
+  decision: 'DECISION',
+};
 
-// ─── Nav item types ──────────────────────────────────────────
-
-interface NavItem {
-  id: string;
-  type: 'group-header' | 'file' | 'more-files' | 'system-prompt' | 'skill' | 'tool-group' | 'missing-item';
-  label: string;
-  detail: string;
-  groupKey?: string;
-  data?: any;
-}
-
-interface MiniDetailData {
-  title: string;
-  rows: Array<{ label: string; value: string }>;
-  footer?: string;
-}
-
-// ─── Tool result summarization ────────────────────────────────
+const FORCE_COLLAPSED: SectionKey[] = [];
 
 interface ToolCallInfo {
   toolName: string;
   toolInput?: string;
   toolResult?: string;
+}
+
+function safeJsonParse<T>(str: string | null | undefined, fallback: T): T {
+  if (!str) return fallback;
+  try { return JSON.parse(str); } catch { return fallback; }
 }
 
 function normalizeToolName(name: string): string {
@@ -50,375 +61,90 @@ function normalizeToolName(name: string): string {
   return map[name] ?? name;
 }
 
-function extractArg(input: string): string {
-  if (!input) return '';
-  if (input.startsWith('{')) {
-    try {
-      const obj = JSON.parse(input);
-      if (obj.command) return obj.command.split('\n')[0];
-      if (obj.file_path) {
-        const m = obj.file_path.match(/([^/\\]+\.[a-z]+)/i);
-        return m ? m[1] : obj.file_path.slice(-40);
-      }
-      if (obj.pattern) return `"${obj.pattern}"`;
-      if (obj.subagent_type) return obj.subagent_type;
-      if (obj.description) return obj.description;
-    } catch {}
-  }
-  return input.split('\n')[0];
-}
-
-function extractFilename(input: string): string {
-  if (!input) return 'file';
-  if (input.startsWith('{')) {
-    try {
-      const obj = JSON.parse(input);
-      if (obj.command) return obj.command.split('\n')[0].slice(0, 36);
-      const path = obj.file_path ?? obj.path ?? '';
-      if (path) {
-        const m = path.match(/([^/\\]+)$/);
-        return m ? m[1] : path.slice(-36);
-      }
-      if (obj.pattern) return `"${obj.pattern}"`;
-      if (obj.subagent_type) return obj.subagent_type;
-      if (obj.description) return obj.description.slice(0, 36);
-    } catch {}
-  }
-  const m = input.match(/([^/\\]+)$/);
-  return m ? m[1] : input.slice(0, 36);
-}
-
-function summarizeResult(toolName: string, result?: string): string {
-  if (!result) return 'done';
-  const lines = result.split('\n').filter(l => l.trim());
-  if (lines.length === 0) return 'done';
-
-  const normalized = normalizeToolName(toolName);
-
-  switch (normalized) {
-    case 'Read':
-      return `${lines.length} lines`;
-    case 'Edit':
-      return `${lines.length > 1 ? lines.length + ' edits' : '1 edit'}`;
-    case 'Write':
-      return 'written';
-    case 'Grep': {
-      const matchLines = lines.filter(l => l.includes(':'));
-      return matchLines.length > 0 ? `${matchLines.length} matches` : `${lines.length} lines`;
-    }
-    case 'Glob':
-      return `${lines.length} files`;
-    case 'Bash': {
-      if (result.includes('EXIT: 0') || result.includes('exit code 0')) return 'success';
-      if (/EXIT:\s*[1-9]/.test(result) || /exit code [1-9]/.test(result)) {
-        const m = result.match(/EXIT:\s*(\d+)|exit code (\d+)/);
-        return `error (exit ${m?.[1] ?? m?.[2] ?? '?'})`;
-      }
-      if (lines.length === 1) {
-        const first = lines[0].trim();
-        if (/^[drwx-]{10}/.test(first)) return '1 item';
-        if (first.startsWith('/') || first.startsWith('./')) return 'done';
-        if (first.length <= 25 && !first.includes('\t')) return first;
-      }
-      return `${lines.length} lines`;
-    }
-    case 'Agent':
-      return `${lines.length} lines`;
-    default:
-      return `${lines.length} lines`;
-  }
-}
-
 function groupToolCalls(toolCalls: ToolCallInfo[]): Map<string, ToolCallInfo[]> {
   const groups = new Map<string, ToolCallInfo[]>();
   for (const tc of toolCalls) {
-    const name = normalizeToolName(tc.toolName);
-    if (!groups.has(name)) groups.set(name, []);
-    groups.get(name)!.push(tc);
+    const n = normalizeToolName(tc.toolName);
+    if (!groups.has(n)) groups.set(n, []);
+    groups.get(n)!.push(tc);
   }
   return groups;
 }
 
-function readSummary(toolCalls: ToolCallInfo[]): string {
-  if (toolCalls.length === 0) return 'no tool calls';
-  const groups = groupToolCalls(toolCalls);
-  const parts: string[] = [];
-  for (const [name, calls] of groups) {
-    parts.push(`${name}×${calls.length}`);
-  }
-  return parts.slice(0, 4).join(' · ');
-}
-
-// ─── Navigation helpers ─────────────────────────────────────
-
-function extractFullPath(input: string): string {
-  if (!input) return '';
-  if (input.startsWith('{')) {
-    try {
-      const obj = JSON.parse(input);
-      return obj.file_path ?? obj.path ?? '';
-    } catch { return ''; }
-  }
-  return input;
-}
-
-function shortenDir(fullPath: string): { dir: string; file: string } {
-  const parts = fullPath.split('/').filter(Boolean);
-  if (parts.length <= 1) return { dir: './', file: parts[0] ?? '' };
-  const file = parts[parts.length - 1];
-  const dirParts = parts.slice(Math.max(0, parts.length - 3), parts.length - 1);
-  return { dir: dirParts.join('/') + '/', file };
-}
-
-const FILE_TOOLS = new Set(['Read', 'Write', 'Edit']);
-
-function computeReadItems(toolCalls: ToolCallInfo[], expandedGroups: Set<string>): NavItem[] {
-  const items: NavItem[] = [];
-
-  // Group file-based tools by directory
-  const fileCallsByDir = new Map<string, Array<{ tc: ToolCallInfo; file: string; tokens: number }>>();
-  const otherCalls = new Map<string, ToolCallInfo[]>();
-
+function countsByTool(toolCalls: ToolCallInfo[]): Map<string, number> {
+  const m = new Map<string, number>();
   for (const tc of toolCalls) {
-    const norm = normalizeToolName(tc.toolName);
-    if (FILE_TOOLS.has(norm)) {
-      const fullPath = extractFullPath(tc.toolInput ?? '');
-      const { dir, file } = shortenDir(fullPath);
-      if (!fileCallsByDir.has(dir)) fileCallsByDir.set(dir, []);
-      const tokens = Math.ceil((tc.toolResult?.length ?? 0) / 4);
-      fileCallsByDir.get(dir)!.push({ tc, file: file || extractFilename(tc.toolInput ?? ''), tokens });
-    } else {
-      if (!otherCalls.has(norm)) otherCalls.set(norm, []);
-      otherCalls.get(norm)!.push(tc);
+    const n = normalizeToolName(tc.toolName);
+    m.set(n, (m.get(n) ?? 0) + 1);
+  }
+  return m;
+}
+
+function extractFilename(input: any): string {
+  try {
+    let obj: any = input;
+    if (typeof input === 'string') {
+      if (!input || !input.startsWith('{')) return '';
+      obj = JSON.parse(input);
     }
+    if (!obj || typeof obj !== 'object') return '';
+    const fp = obj.file_path ?? obj.path ?? '';
+    if (!fp) return '';
+    return String(fp).split('/').pop() || '';
+  } catch {
+    return '';
   }
+}
 
-  for (const [dir, files] of fileCallsByDir) {
-    items.push({
-      id: `gh:${dir}`,
-      type: 'group-header',
-      label: dir,
-      detail: '',
-      groupKey: dir,
-    });
-
-    const isExpanded = expandedGroups.has(dir);
-    const showCount = isExpanded ? files.length : Math.min(3, files.length);
-
-    for (let i = 0; i < showCount; i++) {
-      const f = files[i];
-      items.push({
-        id: `f:${dir}:${i}`,
-        type: 'file',
-        label: f.file,
-        detail: formatTokens(f.tokens),
-        groupKey: dir,
-        data: { toolName: f.tc.toolName, tokens: f.tokens, result: summarizeResult(f.tc.toolName, f.tc.toolResult) },
-      });
+function extractBashCommand(input: any): string {
+  try {
+    let obj: any = input;
+    if (typeof input === 'string') {
+      if (!input || !input.startsWith('{')) return String(input ?? '').slice(0, 80);
+      obj = JSON.parse(input);
     }
-
-    if (!isExpanded && files.length > 3) {
-      const hiddenTokens = files.slice(3).reduce((s, f) => s + f.tokens, 0);
-      items.push({
-        id: `more:${dir}`,
-        type: 'more-files',
-        label: `+${files.length - 3} more files`,
-        detail: formatTokens(hiddenTokens),
-        groupKey: dir,
-      });
-    }
+    return String(obj?.command ?? '').trim().slice(0, 120);
+  } catch {
+    return '';
   }
-
-  for (const [name, calls] of otherCalls) {
-    items.push({
-      id: `tg:read:${name}`,
-      type: 'tool-group',
-      label: `${name} (${calls.length})`,
-      detail: calls.slice(0, 2).map(tc => extractFilename(tc.toolInput ?? '')).join(', '),
-      data: { toolName: name, calls },
-    });
-  }
-
-  return items;
 }
 
-function computeGivenItems(breakdown: any, totalIn: number): NavItem[] {
-  if (!breakdown) return [];
-  const items: NavItem[] = [];
-
-  const sysTokens = breakdown.baseClaude?.tokens ?? 0;
-  const pct = totalIn > 0 ? ((sysTokens / totalIn) * 100).toFixed(0) : '0';
-  items.push({
-    id: 'sys-prompt',
-    type: 'system-prompt',
-    label: 'system prompt',
-    detail: `${formatTokens(sysTokens)}   ${pct}%`,
-  });
-
-  const skills = breakdown.skills ?? [];
-  for (const sk of skills) {
-    const callPct = totalIn > 0 ? ((sk.tokens / totalIn) * 100).toFixed(1) : '0';
-    const sysPct = sysTokens > 0 ? ((sk.tokens / sysTokens) * 100).toFixed(1) : '0';
-    const isHighest = sk.tokens === Math.max(...skills.map((s: any) => s.tokens));
-    items.push({
-      id: `skill:${sk.name}`,
-      type: 'skill',
-      label: `skill: ${sk.name}`,
-      detail: `${formatTokens(sk.tokens)}  ${callPct}%`,
-      data: { name: sk.name, tokens: sk.tokens, callPct, sysPct, isHighest },
-    });
-  }
-
-  return items;
+function isBashFailure(tc: ToolCallInfo): boolean {
+  const r = (tc.toolResult ?? '').toLowerCase();
+  if (!r) return false;
+  return /\berror\b|\bfailed\b|not found|cannot|fatal|command not found|no such file/.test(r);
 }
 
-function computeDecisionItems(toolGroups: Map<string, ToolCallInfo[]>): NavItem[] {
-  const items: NavItem[] = [];
-  for (const [name, calls] of toolGroups) {
-    const summaryParts = calls.slice(0, 3).map(tc => {
-      const arg = extractArg(tc.toolInput ?? '');
-      const m = arg.match(/([^/\\]+\.[a-z]+)/i);
-      return m ? m[1] : arg.slice(0, 20);
-    });
-    const more = calls.length > 3 ? ` · +${calls.length - 3} more` : '';
-    items.push({
-      id: `dec:${name}`,
-      type: 'tool-group',
-      label: `${name}×${calls.length}`,
-      detail: summaryParts.join(' · ') + more,
-      data: { toolName: name, calls },
-    });
-  }
-  return items;
+function firstErrorLine(tc: ToolCallInfo): string {
+  const r = tc.toolResult ?? '';
+  const line = r.split('\n').find(l => /error|failed|not found|cannot|fatal/i.test(l));
+  return (line ?? r.split('\n')[0] ?? '').trim().slice(0, 80);
 }
 
-function computeMissingItems(missingCtx: any[]): NavItem[] {
-  return missingCtx.map((mc, i) => ({
-    id: `miss:${i}`,
-    type: 'missing-item' as const,
-    label: `call ${circledNumber(mc.callIndex)}`,
-    detail: `"${(mc.content ?? '').replace(/\n/g, ' ').slice(0, 50)}"`,
-    data: mc,
-  }));
+function isSystemReminder(text: string): boolean {
+  return text.includes('<system-reminder>') || text.includes('system-reminder');
 }
 
-// ─── Mini detail builders ───────────────────────────────────
-
-function buildFileDetail(item: NavItem, totalIn: number): MiniDetailData {
-  const d = item.data ?? {};
-  const pct = totalIn > 0 ? ((d.tokens / totalIn) * 100).toFixed(1) : '0';
-  return {
-    title: item.label,
-    rows: [
-      { label: 'tokens', value: String(d.tokens ?? 0) },
-      { label: 'tool', value: normalizeToolName(d.toolName ?? 'Read') },
-      { label: 'result', value: d.result ?? 'done' },
-    ],
-    footer: `this file consumed ${pct}% of total call tokens`,
-  };
+function hasRealContent(text: string): boolean {
+  return /[a-zA-Z]{4,}/.test(text ?? '');
 }
 
-function buildSkillDetail(item: NavItem): MiniDetailData {
-  const d = item.data ?? {};
-  return {
-    title: item.label,
-    rows: [
-      { label: 'tokens', value: String(d.tokens ?? 0) },
-      { label: '% of call', value: `${d.callPct}%` },
-      { label: '% of system', value: `${d.sysPct}%` },
-    ],
-    footer: d.isHighest ? 'this is your highest-cost skill.' : undefined,
-  };
+function filterRealMissing(missingCtx: any[]): any[] {
+  return (missingCtx ?? []).filter((mc: any) => hasRealContent(mc?.content ?? ''));
 }
 
-function buildToolGroupDetail(item: NavItem): MiniDetailData {
-  const d = item.data ?? {};
-  const calls: ToolCallInfo[] = d.calls ?? [];
-  const toolName = d.toolName ?? '';
-
-  if (toolName === 'Bash') {
-    return {
-      title: `Bash commands (${calls.length})`,
-      rows: calls.slice(0, 10).map(tc => {
-        const cmd = extractArg(tc.toolInput ?? '').slice(0, 40);
-        const result = summarizeResult(tc.toolName, tc.toolResult);
-        return { label: cmd, value: `→ ${result}` };
-      }),
-    };
-  }
-
-  return {
-    title: `${toolName} (${calls.length} calls)`,
-    rows: calls.slice(0, 10).map(tc => {
-      const arg = extractFilename(tc.toolInput ?? '');
-      const result = summarizeResult(tc.toolName, tc.toolResult);
-      return { label: arg, value: `→ ${result}` };
-    }),
-  };
+function formatToolSummary(toolCalls: ToolCallInfo[]): string {
+  const counts = countsByTool(toolCalls);
+  return [...counts.entries()].map(([n, c]) => `${n}×${c}`).join(', ');
 }
 
-function buildMissingDetail(item: NavItem): MiniDetailData {
-  const mc = item.data ?? {};
-  return {
-    title: `missing from call ${circledNumber(mc.callIndex)}`,
-    rows: [
-      { label: 'content', value: (mc.content ?? '').slice(0, 200) },
-    ],
-  };
-}
-
-// ─── Mini detail overlay component ──────────────────────────
-
-function MiniDetailOverlay({ data, width }: { data: MiniDetailData; width: number }): React.ReactElement {
-  const boxWidth = Math.min(width - 4, 56);
-  return (
-    <Box flexDirection="column" paddingX={1} marginTop={1}>
-      <Box borderStyle="single" borderColor="#c4607a" flexDirection="column" paddingX={1} width={boxWidth}>
-        <Box justifyContent="space-between">
-          <Text color="#c4607a" bold>{data.title}</Text>
-          <Text color="#505050">[esc to close]</Text>
-        </Box>
-        <Box marginTop={1} flexDirection="column">
-          {data.rows.map((row, i) => (
-            <Text key={i} color="#A0A0A0">  {row.label.padEnd(14)} {row.value}</Text>
-          ))}
-        </Box>
-        {data.footer && (
-          <Box marginTop={1}>
-            <Text color="#505050">  {data.footer}</Text>
-          </Box>
-        )}
-      </Box>
-    </Box>
-  );
-}
-
-// ─── Main component ──────────────────────────────────────────
-
-export function DetailView({ call, onBack }: Props) {
-  const { stdout } = useStdout();
-  const termWidth = stdout?.columns ?? 80;
-
-  const [focusedSection, setFocusedSection] = useState(0);
-  const [collapsed, setCollapsed] = useState<Set<SectionKey>>(() => {
-    const s = new Set<SectionKey>(SECTION_ORDER);
-    const mc = safeJsonParse(call.missing_context ?? 'null', []) ?? [];
-    if (mc.length > 0) s.delete('missing');
-    return s;
-  });
-  const [navLevel, setNavLevel] = useState<1 | 2>(1);
-  const [itemIndex, setItemIndex] = useState(0);
-  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
-  const [miniDetail, setMiniDetail] = useState<MiniDetailData | null>(null);
-
+export function DetailView({ call, prevCall, isSimilarToPrev, width }: Props) {
   const toolCalls: ToolCallInfo[] = safeJsonParse(call.tool_calls, []);
   const missingCtx: any[] = safeJsonParse(call.missing_context ?? 'null', []) ?? [];
   const breakdown: any = safeJsonParse(call.system_breakdown ?? 'null', null);
-  let reqBody: any = {};
-  let resBody: any = {};
-  try { reqBody = JSON.parse(call.request_body ?? '{}'); } catch { /* ignore */ }
-  try { resBody = JSON.parse(call.response_body ?? '{}'); } catch { /* ignore */ }
 
+  let reqBody: any = {};
+  try { reqBody = JSON.parse(call.request_body ?? '{}'); } catch {}
   const messages = reqBody.messages ?? [];
   const userMsg = messages.filter((m: any) => m.role === 'user').pop();
   const userMsgText = typeof userMsg?.content === 'string'
@@ -428,419 +154,449 @@ export function DetailView({ call, onBack }: Props) {
       : '';
 
   const totalIn = call.token_count_input + (call.token_count_cache_read ?? 0);
-  const skillCount = breakdown?.skills?.length ?? 0;
-  const convTokens = totalIn - (breakdown?.baseClaude?.tokens ?? 0) - (breakdown?.skills?.reduce((s: number, sk: any) => s + sk.tokens, 0) ?? 0);
-
-  const visibleSections = SECTION_ORDER;
+  const skillsRaw: { name: string; tokens: number }[] = breakdown?.skills ?? [];
+  const skillsSorted = [...skillsRaw].sort((a, b) => b.tokens - a.tokens);
+  const sysTokens = breakdown?.baseClaude?.tokens ?? 0;
+  const skillsTotal = skillsSorted.reduce((s, sk) => s + sk.tokens, 0);
+  const convTokens = Math.max(0, totalIn - sysTokens - skillsTotal);
   const toolGroups = groupToolCalls(toolCalls);
+  const idx = circledNumber(call.call_index);
 
-  // Compute items for sections
-  function getItems(section: SectionKey): NavItem[] {
-    switch (section) {
-      case 'read': return computeReadItems(toolCalls, expandedGroups);
-      case 'given': return computeGivenItems(breakdown, totalIn);
-      case 'decision': return computeDecisionItems(toolGroups);
-      case 'missing': return computeMissingItems(missingCtx);
-      default: return [];
-    }
-  }
+  // ─── View mode (delta ↔ full) ───
+  const canDelta = !!prevCall && !!isSimilarToPrev;
+  const [viewMode, setViewMode] = useState<'delta' | 'full'>('full');
 
-  const currentSection = visibleSections[focusedSection];
-  const currentItems = getItems(currentSection);
+  // ─── Section expand/collapse state (for full view) ───
+  // Default: all sections expanded except the raw_* ones.
+  const realMissing = filterRealMissing(missingCtx);
+  const initialExpanded: SectionKey[] = SECTION_ORDER.filter(
+    s => !FORCE_COLLAPSED.includes(s),
+  );
+  const [expandedSections, setExpandedSections] = useState<Set<SectionKey>>(new Set(initialExpanded));
+  const [sectionCursor, setSectionCursor] = useState(0);
 
-  // Clamp itemIndex
-  const clampedItemIndex = Math.min(itemIndex, Math.max(0, currentItems.length - 1));
-
-  function handleItemEnter(item: NavItem) {
-    switch (item.type) {
-      case 'group-header':
-        setExpandedGroups(prev => {
-          const next = new Set(prev);
-          if (next.has(item.groupKey!)) next.delete(item.groupKey!);
-          else next.add(item.groupKey!);
-          return next;
-        });
-        break;
-      case 'more-files':
-        setExpandedGroups(prev => new Set([...prev, item.groupKey!]));
-        break;
-      case 'file':
-        setMiniDetail(buildFileDetail(item, totalIn));
-        break;
-      case 'skill':
-        setMiniDetail(buildSkillDetail(item));
-        break;
-      case 'system-prompt':
-        break;
-      case 'tool-group':
-        setMiniDetail(buildToolGroupDetail(item));
-        break;
-      case 'missing-item':
-        setMiniDetail(buildMissingDetail(item));
-        break;
-    }
-  }
-
-  useInput((input, key) => {
-    // Mini detail overlay: only esc closes
-    if (miniDetail) {
-      if (key.escape) setMiniDetail(null);
+  useInput((_input, key) => {
+    if (key.tab && prevCall) {
+      setViewMode(m => m === 'delta' ? 'full' : 'delta');
       return;
     }
-
-    // Level 2: item navigation
-    if (navLevel === 2) {
-      if (key.escape) {
-        setNavLevel(1);
-        return;
-      }
-      if (key.upArrow) {
-        setItemIndex(Math.max(0, clampedItemIndex - 1));
-        return;
-      }
-      if (key.downArrow) {
-        setItemIndex(Math.min(currentItems.length - 1, clampedItemIndex + 1));
-        return;
-      }
-      if (key.return) {
-        const item = currentItems[clampedItemIndex];
-        if (item) handleItemEnter(item);
-        return;
-      }
-      if (key.tab) {
-        setNavLevel(1);
-        setFocusedSection((focusedSection + 1) % visibleSections.length);
-        setItemIndex(0);
-        return;
-      }
-      return;
-    }
-
-    // Level 1: section navigation
-    if (key.escape) { onBack(); return; }
-
-    if (key.upArrow) {
-      setFocusedSection(Math.max(0, focusedSection - 1));
-      return;
-    }
-    if (key.downArrow) {
-      setFocusedSection(Math.min(visibleSections.length - 1, focusedSection + 1));
-      return;
-    }
-    if (key.tab) {
-      if (NAVIGABLE_SECTIONS.has(currentSection) && currentItems.length > 0) {
-        // Auto-expand and enter Level 2
-        setCollapsed(prev => {
-          const next = new Set(prev);
-          next.delete(currentSection);
-          return next;
-        });
-        setNavLevel(2);
-        setItemIndex(0);
-      } else {
-        setFocusedSection((focusedSection + 1) % visibleSections.length);
-      }
-      return;
-    }
-
-    if (key.leftArrow) {
-      setCollapsed(prev => new Set([...prev, currentSection]));
-      return;
-    }
-    if (key.rightArrow || key.return) {
-      setCollapsed(prev => {
+    if (viewMode !== 'full') return;
+    if (key.upArrow) setSectionCursor(c => Math.max(0, c - 1));
+    else if (key.downArrow) setSectionCursor(c => Math.min(SECTION_ORDER.length - 1, c + 1));
+    else if (key.rightArrow || key.return) {
+      const sec = SECTION_ORDER[sectionCursor];
+      if (FORCE_COLLAPSED.includes(sec)) return;
+      setExpandedSections(prev => {
         const next = new Set(prev);
-        if (next.has(currentSection)) {
-          next.delete(currentSection);
-        } else {
-          next.add(currentSection);
-        }
+        next.add(sec);
         return next;
       });
-      return;
+    } else if (key.leftArrow) {
+      const sec = SECTION_ORDER[sectionCursor];
+      setExpandedSections(prev => {
+        const next = new Set(prev);
+        next.delete(sec);
+        return next;
+      });
     }
   });
 
-  const idx = circledNumber(call.call_index);
+  // ─── Bash loop detection ───
+  const bashCalls = toolCalls.filter(tc => normalizeToolName(tc.toolName) === 'Bash');
+  const bashByCmd = new Map<string, { calls: ToolCallInfo[]; failures: number }>();
+  for (const b of bashCalls) {
+    const cmd = extractBashCommand(b.toolInput ?? '');
+    if (!cmd) continue;
+    if (!bashByCmd.has(cmd)) bashByCmd.set(cmd, { calls: [], failures: 0 });
+    const e = bashByCmd.get(cmd)!;
+    e.calls.push(b);
+    if (isBashFailure(b)) e.failures++;
+  }
+  // Consecutive-failure streak per command (longest)
+  const bashStreaks = new Map<string, number>();
+  {
+    let curCmd = '';
+    let curStreak = 0;
+    for (const b of bashCalls) {
+      const cmd = extractBashCommand(b.toolInput ?? '');
+      if (cmd === curCmd && isBashFailure(b)) {
+        curStreak++;
+      } else {
+        curStreak = isBashFailure(b) ? 1 : 0;
+        curCmd = cmd;
+      }
+      const prev = bashStreaks.get(cmd) ?? 0;
+      if (curStreak > prev) bashStreaks.set(cmd, curStreak);
+    }
+  }
+  const bashLoop = [...bashStreaks.entries()].find(([_, s]) => s > 2);
 
-  // ── Section header summaries ──
+  // ─── DELTA VIEW ───
+  function renderDelta(): React.ReactNode {
+    const prev = prevCall!;
+    const prevTools: ToolCallInfo[] = safeJsonParse(prev.tool_calls, []);
+    const curCounts = countsByTool(toolCalls);
+    const prevCounts = countsByTool(prevTools);
 
-  function sectionSummary(section: SectionKey): string {
+    const allTools = new Set([...curCounts.keys(), ...prevCounts.keys()]);
+    const toolDiffs: { name: string; delta: number; cur: number }[] = [];
+    for (const name of allTools) {
+      const cur = curCounts.get(name) ?? 0;
+      const p = prevCounts.get(name) ?? 0;
+      if (cur !== p) toolDiffs.push({ name, delta: cur - p, cur });
+    }
+
+    const prevTotalIn = prev.token_count_input + (prev.token_count_cache_read ?? 0);
+    const tokDelta = totalIn - prevTotalIn;
+    const costDelta = call.estimated_cost_usd - prev.estimated_cost_usd;
+
+    let prevTurns = 0;
+    try { prevTurns = (JSON.parse(prev.request_body ?? '{}').messages ?? []).length; } catch {}
+    const turnDelta = messages.length - prevTurns;
+
+    const curFiles = new Set(
+      toolCalls
+        .filter(tc => ['Read', 'Edit', 'Write'].includes(normalizeToolName(tc.toolName)))
+        .map(tc => extractFilename(tc.toolInput ?? ''))
+        .filter(Boolean)
+    );
+    const prevFiles = new Set(
+      prevTools
+        .filter(tc => ['Read', 'Edit', 'Write'].includes(normalizeToolName(tc.toolName)))
+        .map(tc => extractFilename(tc.toolInput ?? ''))
+        .filter(Boolean)
+    );
+    const sameFiles = [...curFiles].filter(f => prevFiles.has(f));
+
+    const toolPatternSame = (() => {
+      if (curCounts.size !== prevCounts.size) return false;
+      for (const [k] of curCounts) if (!prevCounts.has(k)) return false;
+      return true;
+    })();
+
+    return (
+      <Box flexDirection="column" width={width}>
+        <Text color="#e62050">  call {idx}  user → {formatToolSummary(toolCalls)}</Text>
+        <Text> </Text>
+
+        <Text color="#e62050" bold>  WHAT CHANGED</Text>
+        {toolDiffs.length === 0 && tokDelta === 0 && costDelta === 0 && turnDelta === 0 && (
+          <Text color="#505050">    (nothing changed from previous call)</Text>
+        )}
+        {toolDiffs.map(d => {
+          const sign = d.delta > 0 ? '+' : '−';
+          const abs = Math.abs(d.delta);
+          const wasVal = d.cur - d.delta;
+          return (
+            <Text key={d.name} color="#e62050">
+              {'    '}{sign} {d.name}×{abs} {d.delta > 0 ? 'added' : 'removed'}   ({d.cur} total, was {wasVal})
+            </Text>
+          );
+        })}
+        {tokDelta !== 0 && (
+          <Text color="#e62050">
+            {'    '}{tokDelta > 0 ? '+' : '−'} {formatTokens(Math.abs(tokDelta))} tok {tokDelta > 0 ? 'added' : 'removed'}   ({formatTokens(totalIn)} total)
+          </Text>
+        )}
+        {costDelta !== 0 && (
+          <Text color="#e62050">
+            {'    '}{costDelta > 0 ? '+' : '−'} {formatCost(Math.abs(costDelta))} {costDelta > 0 ? 'added' : 'removed'}   ({formatCost(call.estimated_cost_usd)} total)
+          </Text>
+        )}
+        {turnDelta !== 0 && (
+          <Text color="#e62050">
+            {'    '}{turnDelta > 0 ? '+' : '−'} {Math.abs(turnDelta)} more turns   ({messages.length} turns total)
+          </Text>
+        )}
+
+        <Text> </Text>
+        <Text color="#e62050" bold>  UNCHANGED</Text>
+        {toolPatternSame && (
+          <Text color="#A0A0A0">    Same tool pattern as previous call</Text>
+        )}
+        {sameFiles.length > 0 && (
+          <Text color="#A0A0A0">    Same files: {sameFiles.slice(0, 4).join(' · ')}{sameFiles.length > 4 ? ` · +${sameFiles.length - 4} more` : ''}</Text>
+        )}
+        {!toolPatternSame && sameFiles.length === 0 && (
+          <Text color="#505050">    (nothing notably unchanged)</Text>
+        )}
+
+        {bashLoop && (
+          <>
+            <Text> </Text>
+            <Text color="#e62050" bold>  ⚠ BASH LOOP: {bashLoop[0]} failed {bashLoop[1]} times in a row</Text>
+          </>
+        )}
+
+        <Text> </Text>
+        <Text color="#505050">  [tab] for full detail view</Text>
+      </Box>
+    );
+  }
+
+  // ─── FULL VIEW (section renderer) ───
+  function renderSectionContent(section: SectionKey): React.ReactNode {
     switch (section) {
+      case 'changed': {
+        if (!prevCall) {
+          return <Text color="#505050">    (no previous call to diff against)</Text>;
+        }
+        const prev = prevCall;
+        const prevTools: ToolCallInfo[] = safeJsonParse(prev.tool_calls, []);
+        const curCounts = countsByTool(toolCalls);
+        const prevCounts = countsByTool(prevTools);
+        const allTools = new Set([...curCounts.keys(), ...prevCounts.keys()]);
+        const toolDiffs: { name: string; delta: number; cur: number }[] = [];
+        for (const name of allTools) {
+          const cur = curCounts.get(name) ?? 0;
+          const p = prevCounts.get(name) ?? 0;
+          if (cur !== p) toolDiffs.push({ name, delta: cur - p, cur });
+        }
+        const prevTotalIn = prev.token_count_input + (prev.token_count_cache_read ?? 0);
+        const tokDelta = totalIn - prevTotalIn;
+        const costDelta = call.estimated_cost_usd - prev.estimated_cost_usd;
+        let prevTurns = 0;
+        try { prevTurns = (JSON.parse(prev.request_body ?? '{}').messages ?? []).length; } catch {}
+        const turnDelta = messages.length - prevTurns;
+        const nothing = toolDiffs.length === 0 && tokDelta === 0 && costDelta === 0 && turnDelta === 0;
+        if (nothing) {
+          return <Text color="#505050">    (nothing changed from previous call)</Text>;
+        }
+        return (
+          <Box flexDirection="column">
+            {toolDiffs.map(d => {
+              const sign = d.delta > 0 ? '+' : '−';
+              const abs = Math.abs(d.delta);
+              const wasVal = d.cur - d.delta;
+              return (
+                <Text key={d.name} color="#e62050">
+                  {'    '}{sign} {d.name}×{abs} {d.delta > 0 ? 'added' : 'removed'}   ({d.cur} total, was {wasVal})
+                </Text>
+              );
+            })}
+            {tokDelta !== 0 && (
+              <Text color="#e62050">
+                {'    '}{tokDelta > 0 ? '+' : '−'} {formatTokens(Math.abs(tokDelta))} tok {tokDelta > 0 ? 'added' : 'removed'}   ({formatTokens(totalIn)} total)
+              </Text>
+            )}
+            {costDelta !== 0 && (
+              <Text color="#e62050">
+                {'    '}{costDelta > 0 ? '+' : '−'} {formatCost(Math.abs(costDelta))} {costDelta > 0 ? 'added' : 'removed'}   ({formatCost(call.estimated_cost_usd)} total)
+              </Text>
+            )}
+            {turnDelta !== 0 && (
+              <Text color="#e62050">
+                {'    '}{turnDelta > 0 ? '+' : '−'} {Math.abs(turnDelta)} more turns   ({messages.length} turns total)
+              </Text>
+            )}
+          </Box>
+        );
+      }
+      case 'stats':
+        return (
+          <Box flexDirection="column">
+            <Text color="#A0A0A0">    status    {call.status}</Text>
+            <Text color="#A0A0A0">    latency   {formatLatency(call.latency_ms)}</Text>
+            <Text color="#A0A0A0">    tokens    {formatTokens(totalIn)} in / {formatTokens(call.token_count_output)} out</Text>
+            <Text color="#A0A0A0">    cost      {formatCost(call.estimated_cost_usd)}</Text>
+            <Text color="#A0A0A0">    model     {call.model}</Text>
+            {convTokens > 0 && convTokens / Math.max(1, totalIn) > 0.5 && (
+              <Text color="#e62050">    ⚠ {formatTokens(convTokens)} is conversation history ({messages.length} turns)</Text>
+            )}
+          </Box>
+        );
+      case 'read':
+        if (toolCalls.length === 0) return <Text color="#505050">    (no tool calls)</Text>;
+        return (
+          <Box flexDirection="column">
+            {[...toolGroups.entries()].slice(0, 8).map(([name, calls]) => {
+              const names = calls.map(tc => extractFilename(tc.toolInput ?? '')).filter(Boolean);
+              const shown = names.slice(0, 2);
+              const extra = names.length - shown.length;
+              const suffix = shown.length > 0
+                ? `  ${shown.join(' · ')}${extra > 0 ? ` · +${extra} more` : ''}`
+                : '';
+              return (
+                <Text key={name} color="#A0A0A0">    {name.padEnd(8)} ×{calls.length}{suffix}</Text>
+              );
+            })}
+          </Box>
+        );
+      case 'thinking':
+        if (!call.thinking) {
+          return (
+            <Box flexDirection="column">
+              <Text color="#505050">    extended thinking not enabled</Text>
+            </Box>
+          );
+        }
+        return (
+          <Box flexDirection="column">
+            {call.thinking.split('\n').slice(0, 10).map((line, i) => (
+              <Text key={i} color="#A0A0A0">    {line.slice(0, 80)}</Text>
+            ))}
+          </Box>
+        );
+      case 'given':
+        if (!breakdown) return <Text color="#505050">    (no system breakdown)</Text>;
+        return (
+          <Box flexDirection="column">
+            <Text color="#A0A0A0">    system   {String(formatTokens(sysTokens)).padEnd(8)} {totalIn > 0 ? Math.round((sysTokens / totalIn) * 100) : 0}%</Text>
+            {skillsSorted.slice(0, 8).map(sk => {
+              const pct = sysTokens > 0 ? sk.tokens / sysTokens : 0;
+              const n = Math.max(0, Math.min(20, Math.round(pct * 20)));
+              const filled = '▓'.repeat(n);
+              const empty = '░'.repeat(20 - n);
+              return (
+                <Text key={sk.name} color="#A0A0A0">{'    \x1b[0m' + filled + empty + '  ' + sk.name.padEnd(16) + ' ' + formatTokens(sk.tokens)}</Text>
+              );
+            })}
+            {skillsSorted.length > 8 && (
+              <Text color="#505050">    +{skillsSorted.length - 8} more skills</Text>
+            )}
+            <Text color="#A0A0A0">    conv     {formatTokens(convTokens)}  ({messages.length} turns)</Text>
+          </Box>
+        );
+      case 'sent':
+        if (!userMsgText) return <Text color="#505050">    (no user message)</Text>;
+        if (isSystemReminder(userMsgText)) {
+          return (
+            <Box flexDirection="column">
+              <Text color="#e62050">    system-reminder (injected)</Text>
+              <Text color="#A0A0A0">    "{userMsgText.replace(/\n/g, ' ').slice(0, 80)}"</Text>
+            </Box>
+          );
+        }
+        return <Text color="#A0A0A0">    "{userMsgText.slice(0, 200)}"</Text>;
+      case 'missing': {
+        const real = filterRealMissing(missingCtx);
+        if (real.length === 0) return <Text color="#505050">    none</Text>;
+        return (
+          <Box flexDirection="column">
+            {real.slice(0, 5).map((mc: any, i: number) => (
+              <Text key={i} color="#e62050">    △ "{(mc.content ?? '').replace(/\n/g, ' ').slice(0, 60)}"</Text>
+            ))}
+          </Box>
+        );
+      }
+      case 'decision':
+        if (toolCalls.length === 0) return <Text color="#505050">    (no tool calls)</Text>;
+        return (
+          <Box flexDirection="column">
+            {bashLoop && (
+              <Text color="#e62050" bold>    ⚠ BASH LOOP: {bashLoop[0]} failed {bashLoop[1]} times in a row</Text>
+            )}
+            {[...toolGroups.entries()].map(([name, tcs]) => {
+              if (name !== 'Bash') {
+                return <Text key={name} color="#A0A0A0">    {name.padEnd(10)} ×{tcs.length}</Text>;
+              }
+              // Bash: break down by command
+              const byCmd = new Map<string, { n: number; fails: number; firstErr: string }>();
+              for (const b of tcs) {
+                const cmd = extractBashCommand(b.toolInput ?? '') || '(no command)';
+                if (!byCmd.has(cmd)) byCmd.set(cmd, { n: 0, fails: 0, firstErr: '' });
+                const e = byCmd.get(cmd)!;
+                e.n++;
+                if (isBashFailure(b)) {
+                  e.fails++;
+                  if (!e.firstErr) e.firstErr = firstErrorLine(b);
+                }
+              }
+              return (
+                <Box key={name} flexDirection="column">
+                  <Text color="#A0A0A0">    {name.padEnd(10)} ×{tcs.length}</Text>
+                  {[...byCmd.entries()].map(([cmd, info], ci) => {
+                    const allFailed = info.n > 1 && info.fails === info.n;
+                    const multi = info.n > 1;
+                    const cmdShort = cmd.length > 48 ? cmd.slice(0, 45) + '…' : cmd;
+                    return (
+                      <Box key={ci} flexDirection="column">
+                        <Text color={allFailed ? '#e62050' : '#808080'}>
+                          {'            '}{cmdShort}  ×{info.n}{info.fails > 0 ? `  (${info.fails} err)` : ''}
+                        </Text>
+                        {multi && allFailed && (
+                          <Text color="#e62050">{'            '}⚠ ran {info.n} times · all returned errors</Text>
+                        )}
+                        {info.firstErr && allFailed && (
+                          <Text color="#e62050">{'            '}first error: "{info.firstErr}"</Text>
+                        )}
+                      </Box>
+                    );
+                  })}
+                </Box>
+              );
+            })}
+          </Box>
+        );
+    }
+  }
+
+  // ─── Render ───
+  if (viewMode === 'delta' && prevCall) {
+    return renderDelta();
+  }
+
+  // ── Section summary (collapsed view) ──
+  function summarizeFor(sec: SectionKey): string {
+    switch (sec) {
+      case 'changed':
+        return prevCall ? 'vs previous call' : '(no previous call)';
       case 'stats':
         return `${call.status} · ${formatLatency(call.latency_ms)} · ${formatTokens(totalIn)} · ${formatCost(call.estimated_cost_usd)}`;
       case 'read':
-        return readSummary(toolCalls);
+        return toolCalls.length === 0
+          ? '(no tool calls)'
+          : [...toolGroups.entries()].slice(0, 4).map(([n, c]) => `${n}×${c.length}`).join(' · ');
       case 'thinking':
         return call.thinking ? `${call.thinking.split('\n').length} lines` : 'not enabled';
-      case 'given': {
-        const sysT = formatTokens(breakdown?.baseClaude?.tokens ?? 0);
+      case 'given':
         return breakdown
-          ? `${sysT} system · ${skillCount} skills · ${formatTokens(Math.max(0, convTokens))} conv`
-          : 'no breakdown';
-      }
-      case 'sent': {
-        if (!userMsgText) return 'no user message';
-        if (isSystemReminder(userMsgText)) return 'system-reminder (injected)';
-        return `"${userMsgText.replace(/\n/g, ' ').slice(0, 40)}"`;
-      }
+          ? `${formatTokens(sysTokens)} sys · ${skillsSorted.length} skills · ${formatTokens(convTokens)} conv`
+          : '(no breakdown)';
+      case 'sent':
+        if (!userMsgText) return '(no user message — tool result)';
+        if (isSystemReminder(userMsgText)) return 'system-reminder injected';
+        return `"${userMsgText.replace(/\n/g, ' ').slice(0, 50)}…"`;
       case 'missing':
-        return missingCtx.length > 0 ? `${missingCtx.length} instructions lost` : 'none';
-      case 'decision': {
-        if (toolCalls.length === 0) return 'no tool calls';
-        const groups = groupToolCalls(toolCalls);
-        const parts: string[] = [];
-        for (const [name, calls] of groups) {
-          parts.push(`${name}×${calls.length}`);
-        }
-        return parts.join(' · ');
-      }
-      case 'request':
-        return '(large — expand to view)';
-      case 'response':
-        return '(large — expand to view)';
-      default:
-        return '';
+        return realMissing.length > 0 ? `⚠ ${realMissing.length} instructions lost` : 'none';
+      case 'decision':
+        return toolCalls.length === 0
+          ? '(no tool calls)'
+          : [...toolGroups.entries()].slice(0, 4).map(([n, c]) => `${n}×${c.length}`).join(' · ');
     }
-  }
-
-  function sectionHeader(section: SectionKey, label: string, isFocused: boolean): React.ReactNode {
-    const isCollapsed = collapsed.has(section);
-    const arrow = isCollapsed ? '▶' : '▼';
-    const hasMissing = section === 'missing' && missingCtx.length > 0;
-    const color = hasMissing ? '#c4607a' : isFocused ? '#F0F0F0' : '#505050';
-    const prefix = hasMissing ? '⚠ ' : '';
-    const cursor = isFocused ? '► ' : '  ';
-    const summary = isCollapsed ? `   ${sectionSummary(section)}` : '';
-    const inLevel2 = isFocused && navLevel === 2;
-    return (
-      <Box>
-        <Text color={color} bold={isFocused} dimColor={inLevel2}>{cursor}{arrow} {prefix}{label}</Text>
-        {isCollapsed && <Text color="#505050">{summary}</Text>}
-      </Box>
-    );
-  }
-
-  // ── Render a nav item row ──
-
-  function renderItemRow(item: NavItem, isSelected: boolean): React.ReactNode {
-    const padW = Math.max(0, termWidth - 8);
-
-    if (isSelected) {
-      let text: string;
-      switch (item.type) {
-        case 'group-header':
-          text = item.label;
-          break;
-        case 'file':
-          text = `  ${item.label.padEnd(32)} ${item.detail}`;
-          break;
-        case 'more-files':
-          text = `  ${item.label}    ${item.detail}`;
-          break;
-        case 'system-prompt':
-          text = `${item.label.padEnd(20)} ${item.detail}`;
-          break;
-        case 'skill':
-          text = `  ${item.label.padEnd(24)} ${item.detail}`;
-          break;
-        case 'tool-group':
-          text = `${item.label.padEnd(16)} ${item.detail}`;
-          break;
-        case 'missing-item':
-          text = `${item.label}: ${item.detail}`;
-          break;
-        default:
-          text = item.label;
-      }
-      return (
-        <Box key={item.id}>
-          <Text backgroundColor="#c4607a" color="#0F0F0F">{'► ' + text.padEnd(padW)}</Text>
-        </Box>
-      );
-    }
-
-    switch (item.type) {
-      case 'group-header':
-        return <Text key={item.id} color="#505050">    {item.label}</Text>;
-      case 'file':
-        return <Text key={item.id} color="#A0A0A0">      {item.label.padEnd(32)} {item.detail}</Text>;
-      case 'more-files':
-        return <Text key={item.id} color="#c4607a">      {item.label}    {item.detail}</Text>;
-      case 'system-prompt':
-        return <Text key={item.id} color="#A0A0A0">    {item.label.padEnd(20)} {item.detail}</Text>;
-      case 'skill':
-        return <Text key={item.id} color="#505050">      {item.label.padEnd(24)} {item.detail}</Text>;
-      case 'tool-group':
-        return <Text key={item.id} color="#A0A0A0">    {item.label.padEnd(16)} {item.detail}</Text>;
-      case 'missing-item':
-        return <Text key={item.id} color="#c4607a">    {item.label}: {item.detail}</Text>;
-      default:
-        return null;
-    }
-  }
-
-  // ── Render navigable content for a section ──
-
-  function renderNavContent(section: SectionKey): React.ReactNode {
-    const items = getItems(section);
-    const sIdx = visibleSections.indexOf(section);
-    const isActive = focusedSection === sIdx && navLevel === 2;
-
-    if (items.length === 0) return <Text color="#505050">    (empty)</Text>;
-
-    return (
-      <Box flexDirection="column">
-        {items.map((item, i) => renderItemRow(item, isActive && i === clampedItemIndex))}
-      </Box>
-    );
-  }
-
-  function renderSection(key: SectionKey, label: string, content: React.ReactNode): React.ReactNode {
-    const sectionIdx = visibleSections.indexOf(key);
-    if (sectionIdx === -1) return null;
-    const isFocused = focusedSection === sectionIdx;
-    const isCollapsed = collapsed.has(key);
-
-    return (
-      <Box flexDirection="column" paddingX={1} marginTop={0}>
-        {sectionHeader(key, label, isFocused)}
-        {!isCollapsed && content}
-      </Box>
-    );
-  }
-
-  // ── Status bar text ──
-
-  let statusText: string;
-  if (miniDetail) {
-    statusText = '  esc close';
-  } else if (navLevel === 2) {
-    statusText = '  ↑↓ items · enter select · esc back to sections';
-  } else {
-    statusText = '  ↑↓ sections · → expand · ← collapse · tab enter items · esc back';
   }
 
   return (
-    <Box flexDirection="column" paddingX={1}>
-      {/* Header */}
-      <Box borderStyle="single" borderColor="#2A2A2A" paddingX={1}>
-        <Text color="#c4607a">call {idx}  {call.summary}   </Text>
-        <Text color="#505050">[esc to close]</Text>
-      </Box>
+    <Box flexDirection="column" width={width}>
+      <Text color="#e62050">  call {idx}  {call.summary}</Text>
+      <Text> </Text>
+      {SECTION_ORDER.map((sec, i) => {
+        // Force-collapsed sections can NEVER expand.
+        const forceCollapsed = FORCE_COLLAPSED.includes(sec);
+        const isExpanded = !forceCollapsed && expandedSections.has(sec);
+        const isCursor = i === sectionCursor;
+        const arrow = isExpanded ? '▼' : '►';
+        const isMissingWithContent = sec === 'missing' && realMissing.length > 0;
+        const headerColor = isMissingWithContent || isCursor ? '#e62050' : '#707070';
 
-      {/* STATS */}
-      {renderSection('stats', 'STATS', (
-        <Box flexDirection="column">
-          <Text color="#A0A0A0">    status    {call.status}</Text>
-          <Text color="#A0A0A0">    latency   {formatLatency(call.latency_ms)}</Text>
-          <Text color="#A0A0A0">    tokens    {formatTokens(totalIn)} in{(call.token_count_cache_read ?? 0) > 0 ? ` (+ ${formatTokens(call.token_count_cache_read)} cached)` : ''} / {formatTokens(call.token_count_output)} out</Text>
-          <Text color="#A0A0A0">    cost      {formatCost(call.estimated_cost_usd)}</Text>
-          <Text color="#A0A0A0">    model     {call.model}</Text>
-          {totalIn > 50000 && convTokens > 0 && (
-            <Text color="#c4607a">    ⚠ {formatTokens(Math.max(0, convTokens))} is conversation history ({messages.length} turns)</Text>
-          )}
-          {totalIn > 50000 && convTokens > 0 && (
-            <Text color="#505050">      context is very large — compaction likely soon</Text>
-          )}
-        </Box>
-      ))}
-
-      {/* WHAT IT READ — navigable */}
-      {renderSection('read', 'WHAT IT READ', renderNavContent('read'))}
-
-      {/* WHAT IT WAS THINKING */}
-      {renderSection('thinking', 'WHAT IT WAS THINKING', (
-        call.thinking ? (
-          <Box flexDirection="column">
-            {call.thinking.split('\n').slice(0, 12).map((line, i) => (
-              <Text key={i} color="#A0A0A0">    {line.slice(0, 80)}</Text>
-            ))}
-            {call.thinking.split('\n').length > 12 && (
-              <Text color="#505050">    ... ({call.thinking.split('\n').length - 12} more lines)</Text>
+        return (
+          <Box key={sec} flexDirection="column">
+            <Text color={headerColor} bold={isCursor}>
+              {isCursor ? '►' : ' '} {arrow} {SECTION_LABELS[sec]}
+              {!isExpanded && <Text color="#505050">   {summarizeFor(sec)}</Text>}
+            </Text>
+            {isExpanded && (
+              <Box flexDirection="column" marginBottom={1}>
+                {renderSectionContent(sec)}
+              </Box>
             )}
           </Box>
-        ) : (
-          <Box flexDirection="column">
-            <Text color="#505050">    extended thinking not enabled</Text>
-            <Text color="#505050">    tip: set CLAUDE_CODE_THINKING=1 to enable</Text>
-          </Box>
-        )
-      ))}
-
-      {/* WHAT IT WAS GIVEN — navigable */}
-      {renderSection('given', 'WHAT IT WAS GIVEN', (
-        breakdown ? (
-          <Box flexDirection="column">
-            {renderNavContent('given')}
-            <Text color="#A0A0A0">    conversation       {formatTokens(Math.max(0, convTokens))}  ({messages.length} turns)</Text>
-          </Box>
-        ) : (
-          <Text color="#505050">    (no system breakdown available)</Text>
-        )
-      ))}
-
-      {/* WHAT YOU SENT */}
-      {renderSection('sent', 'WHAT YOU SENT', (
-        userMsgText ? (
-          isSystemReminder(userMsgText) ? (
-            <Box flexDirection="column">
-              <Text color="#c4607a">    system-reminder (injected by Claude Code automatically)</Text>
-              <Text color="#505050">    not a message you typed</Text>
-              <Text color="#A0A0A0">    "{userMsgText.replace(/\n/g, ' ').slice(0, 80)}"</Text>
-            </Box>
-          ) : (
-            <Box flexDirection="column">
-              <Text color="#A0A0A0">    "{userMsgText.slice(0, 120)}"</Text>
-            </Box>
-          )
-        ) : (
-          <Text color="#505050">    (no user message in this call)</Text>
-        )
-      ))}
-
-      {/* WHAT IT WAS MISSING — navigable */}
-      {renderSection('missing', 'WHAT IT WAS MISSING', renderNavContent('missing'))}
-
-      {/* DECISION — navigable */}
-      {renderSection('decision', 'DECISION', renderNavContent('decision'))}
-
-      {/* RAW REQUEST */}
-      {renderSection('request', 'RAW REQUEST', (
-        <Box flexDirection="column">
-          {JSON.stringify(reqBody, null, 2).split('\n').slice(0, 30).map((line, i) => (
-            <Text key={i} color="#505050">    {line}</Text>
-          ))}
-          <Text color="#505050">    ... (truncated)</Text>
-        </Box>
-      ))}
-
-      {/* RAW RESPONSE */}
-      {renderSection('response', 'RAW RESPONSE', (
-        <Box flexDirection="column">
-          {JSON.stringify(resBody, null, 2).split('\n').slice(0, 30).map((line, i) => (
-            <Text key={i} color="#505050">    {line}</Text>
-          ))}
-          <Text color="#505050">    ... (truncated)</Text>
-        </Box>
-      ))}
-
-      {/* Mini detail overlay */}
-      {miniDetail && <MiniDetailOverlay data={miniDetail} width={termWidth} />}
-
-      {/* Navigation hint */}
-      <Box marginTop={1} paddingX={1}>
-        <Text color="#505050">{statusText}</Text>
-      </Box>
+        );
+      })}
+      <Text> </Text>
+      <Text color="#505050">
+        ↑↓ section · → expand · ← collapse{prevCall ? ' · tab delta' : ''}
+      </Text>
     </Box>
   );
-}
-
-function isSystemReminder(text: string): boolean {
-  return text.includes('<system-reminder>') || text.includes('system-reminder');
-}
-
-function safeJsonParse<T>(str: string | null | undefined, fallback: T): T {
-  if (!str) return fallback;
-  try { return JSON.parse(str); } catch { return fallback; }
 }
