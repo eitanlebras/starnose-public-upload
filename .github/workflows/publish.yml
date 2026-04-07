@@ -1,0 +1,34 @@
+name: Publish packages
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+jobs:
+  publish-npm-gpr:
+    name: Publish to GitHub Packages (npm)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: https://npm.pkg.github.com
+          scope: '@eitanlebras'
+      - run: npm install
+      - run: npm run build
+      - name: Publish @eitanlebras/snose to GitHub Packages
+        run: |
+          node -e "
+            const pkg = require('./package.json');
+            pkg.name = '@eitanlebras/snose';
+            pkg.publishConfig = { registry: 'https://npm.pkg.github.com', access: 'public' };
+            require('fs').writeFileSync('./package.json', JSON.stringify(pkg, null, 2));
+          "
+          npm publish
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
