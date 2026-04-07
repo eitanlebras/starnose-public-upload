@@ -61,6 +61,12 @@ export function App({ initialSessionId }: AppProps) {
 
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
 
+  // Force a full redraw when switching major views to prevent stacked remnants.
+  useEffect(() => {
+    if (!stdout) return;
+    stdout.write('\x1b[2J\x1b[H');
+  }, [view, stdout]);
+
   // Load session
   const loadSession = useCallback(async (sessionId: string) => {
     try {
