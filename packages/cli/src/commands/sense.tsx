@@ -345,8 +345,8 @@ function isCostly(call: SSECall, allCalls: SSECall[]): boolean {
 // ZONE 1: SESSION OVERVIEW
 // ═══════════════════════════════════════════════════════════
 
-function ZoneOverview({ sessionKey, title, calls, elapsedMs, sessionDone, width }: {
-  sessionKey: string; title: string; calls: SSECall[]; elapsedMs: number; sessionDone: boolean; width: number;
+function ZoneOverview({ sessionKey, title, calls, elapsedMs, isRunning, width }: {
+  sessionKey: string; title: string; calls: SSECall[]; elapsedMs: number; isRunning: boolean; width: number;
 }) {
   const latest = calls[calls.length - 1];
   const totalIn = latest ? totalInputTokens(latest) : 0;
@@ -386,9 +386,9 @@ function ZoneOverview({ sessionKey, title, calls, elapsedMs, sessionDone, width 
       </Text>
       <Text>
         <Text color={C.mid}>  time     </Text>
-        <Text color={sessionDone ? C.dim : C.normal}>{formatDuration(elapsedMs)}</Text>
-        {sessionDone && <Text color={C.dim}>  ·  done</Text>}
-        {!sessionDone && <Text color={C.dim}>  running</Text>}
+        <Text color={isRunning ? C.normal : C.dim}>{formatDuration(elapsedMs)}</Text>
+        {isRunning && <Text color={C.dim}>  running</Text>}
+        {!isRunning && <Text color={C.dim}>  done</Text>}
       </Text>
     </Box>
   );
@@ -689,14 +689,14 @@ function SenseApp({ initialCalls, initialSession }: {
   const [sessionKey, setSessionKey] = useState(initialSession?.key ?? '...');
   const [sessionTitle, setSessionTitle] = useState(initialSession?.title ?? '');
   const [sessionId, setSessionId] = useState(initialSession?.id ?? '');
-  const [sessionStartedAt] = useState(Date.now());
+  const sessionStartedAtRef = useRef<number | null>(null);
   const [cursor, setCursor] = useState(Math.max(0, initialCalls.length - 1));
   const [live, setLive] = useState<LiveState | null>(null);
   const [tick, setTick] = useState(0);
-  const [sessionDone, setSessionDone] = useState(false);
+  const [sessionDone, setSessionDone] = useState(initialCalls.length > 0);
   const [detailCallData, setDetailCallData] = useState<CallData | null>(null);
 
-  const lastCallTimeRef = useRef(Date.now());
+  const lastCallTimeRef = useRef(initialCalls.length > 0 ? Date.now() - 60_000 : Date.now());
   const callsRef = useRef(calls);
   callsRef.current = calls;
 
@@ -704,14 +704,14 @@ function SenseApp({ initialCalls, initialSession }: {
   useEffect(() => {
     const interval = setInterval(() => {
       setTick(t => t + 1);
-      if (callsRef.current.length > 0 && !sessionDone) {
-        if (Date.now() - lastCallTimeRef.current > 30_000) {
+      if (callsRef.current.length > 0 && !sessionDone && !live) {
+        if (Date.now() - lastCallTimeRef.current > 3_000) {
           setSessionDone(true);
         }
       }
     }, 500);
     return () => clearInterval(interval);
-  }, [sessionDone]);
+  }, [sessionDone, live]);
 
   // SSE connection
   useEffect(() => {
@@ -722,6 +722,7 @@ function SenseApp({ initialCalls, initialSession }: {
       if (data.type === 'ping') return;
 
       if (data.type === 'call_started') {
+        if (sessionStartedAtRef.current == null) sessionStartedAtRef.current = Date.now();
         setLive({
           callIndex: data.callIndex ?? 0,
           startTime: Date.now(),
@@ -819,8 +820,8 @@ function SenseApp({ initialCalls, initialSession }: {
   }
 
   const elapsedMs = sessionDone
-    ? (lastCallTimeRef.current - sessionStartedAt)
-    : (Date.now() - sessionStartedAt);
+    ? calls.reduce((s, c) => s + c.latencyMs, 0)
+    : Math.max(0, Date.now() - (sessionStartedAtRef.current ?? Date.now()));
 
   const sep = '─'.repeat(Math.max(20, width - 2));
 
@@ -832,7 +833,7 @@ function SenseApp({ initialCalls, initialSession }: {
         title={sessionTitle}
         calls={calls}
         elapsedMs={elapsedMs}
-        sessionDone={sessionDone}
+        isRunning={!!live}
         width={width}
       />
 
