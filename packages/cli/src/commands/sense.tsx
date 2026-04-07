@@ -17,9 +17,9 @@ const C = {
   normal: '#F0F0F0',
   dim: '#505050',
   mid: '#A0A0A0',
-  mauve: '#e62050',
+  mauve: '#c4607a',
   yellow: '#B8A060',
-  red: '#e62050',
+  red: '#c4607a',
   bgDim: '#2A2A2A',
 };
 
@@ -358,7 +358,7 @@ function ZoneOverview({ sessionKey, title, calls, elapsedMs, sessionDone, width 
   const pct = Math.round((totalIn / 200000) * 100)
   const filled = Math.round((totalIn / 200000) * 40)
   const empty = 40 - filled
-  const filledChar = chalk.hex('#e8607a')('▓').repeat(filled)
+  const filledChar = chalk.hex('#c4607a')('▓').repeat(filled)
   const emptyChar = chalk.dim('░').repeat(empty)
   const bar = '\x1b[0m' + filledChar + emptyChar
 
