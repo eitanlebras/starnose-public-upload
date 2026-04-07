@@ -1,11 +1,10 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { render, Box, Text, useApp, useInput, useStdout } from 'ink';
+import chalk from 'chalk';
 import EventSource from 'eventsource';
 import { fetchApi, isProxyRunning, getBaseUrl } from '../api.js';
-import chalk from 'chalk';
 import {
   formatTokens, formatCost, formatLatency, formatDuration,
-  circledNumber, box,
 } from '../format.js';
 import { CallData } from './dig/types.js';
 import { DetailView } from './dig/DetailView.js';
@@ -17,15 +16,19 @@ import { DetailView } from './dig/DetailView.js';
 const C = {
   normal: '#F0F0F0',
   dim: '#505050',
-  mauve: '#c4607a',
-  secondary: '#A0A0A0',
+  mid: '#A0A0A0',
+  mauve: '#e62050',
+  yellow: '#B8A060',
+  red: '#e62050',
+  bgDim: '#2A2A2A',
 };
+
+const CONTEXT_LIMIT = 200_000;
 
 // ═══════════════════════════════════════════════════════════
 // TYPES
 // ═══════════════════════════════════════════════════════════
 
-/** Shape of call data from SSE call_completed events (camelCase) */
 interface SSECall {
   callIndex: number;
   summary: string;
@@ -42,6 +45,8 @@ interface SSECall {
   skillsDetected: string[];
   compactionDetected: boolean;
   missingContext: any[];
+  systemBreakdown?: any;
+  tokensBeforeCompaction?: number;
 }
 
 interface ToolCallInfo {
@@ -59,7 +64,7 @@ interface LiveState {
 type Mode = 'stream' | 'browse' | 'detail';
 
 // ═══════════════════════════════════════════════════════════
-// PURE HELPERS — no side effects, no React
+// HELPERS
 // ═══════════════════════════════════════════════════════════
 
 function safeParse<T>(str: string | null | undefined, fallback: T): T {
@@ -72,7 +77,6 @@ function truncate(s: string, max: number): string {
   return s.slice(0, max - 1) + '…';
 }
 
-/** Convert a CallData (snake_case from DB) to our normalized shape */
 function fromCallData(c: CallData): SSECall {
   return {
     callIndex: c.call_index,
@@ -90,6 +94,8 @@ function fromCallData(c: CallData): SSECall {
     skillsDetected: safeParse(c.skills_detected, []),
     compactionDetected: !!c.compaction_detected,
     missingContext: safeParse(c.missing_context ?? 'null', []) ?? [],
+    systemBreakdown: safeParse(c.system_breakdown ?? 'null', null),
+    tokensBeforeCompaction: c.tokens_before_compaction ?? undefined,
   };
 }
 
@@ -97,347 +103,572 @@ function totalInputTokens(call: SSECall): number {
   return call.tokenInput + (call.tokenCacheRead ?? 0);
 }
 
-function isFullyCached(call: SSECall): boolean {
-  return call.tokenInput === 0 && (call.tokenCacheRead ?? 0) > 0;
-}
+const TOOL_NAME_MAP: Record<string, string> = {
+  read_file: 'Read', view: 'Read', cat: 'Read',
+  bash: 'Bash', run_command: 'Bash',
+  edit_file: 'Edit', str_replace: 'Edit', MultiEdit: 'Edit',
+  write_file: 'Write', create_file: 'Write',
+  glob: 'Glob', grep: 'Grep', search: 'Grep',
+};
+const norm = (n: string) => TOOL_NAME_MAP[n] ?? n;
 
-/** Build clean summary — pick first that applies */
-function buildSummary(call: SSECall, allCalls: SSECall[]): string {
-  if (call.compactionDetected) {
-    const idx = allCalls.indexOf(call);
-    const prev = idx > 0 ? allCalls[idx - 1] : null;
-    const after = totalInputTokens(call);
-    const before = prev ? totalInputTokens(prev) : 0;
-    if (after > 1000 && before > 1000) {
-      return `⚡ compaction: ${formatTokens(before)}→${formatTokens(after)}`;
-    }
-    return '⚡ compaction';
-  }
-
-  if (call.callIndex === 1 && call.toolCalls.length === 0) {
-    return 'system prompt loaded';
-  }
-
-  if (call.toolCalls.length > 0) {
-    return 'user → ' + summarizeTools(call.toolCalls);
-  }
-
-  return 'user → response';
-}
-
-/** "Bash, Glob, Read×12" — tool names deduped with counts, max 3 */
 function summarizeTools(tools: ToolCallInfo[]): string {
+  if (!tools?.length) return '';
   const counts = new Map<string, number>();
   for (const t of tools) {
-    const name = normalizeToolName(t.toolName);
-    counts.set(name, (counts.get(name) ?? 0) + 1);
+    const n = norm(t.toolName ?? '');
+    counts.set(n, (counts.get(n) ?? 0) + 1);
   }
+  const entries = [...counts.entries()];
+  if (entries.length === 1) {
+    const [n, c] = entries[0];
+    return c > 1 ? `${n}×${c}` : n;
+  }
+  // Show top tool by count + "+N tools"
+  entries.sort((a, b) => b[1] - a[1]);
+  const [topN, topC] = entries[0];
+  const rest = entries.length - 1;
+  const head = topC > 1 ? `${topN}×${topC}` : topN;
+  return rest > 0 ? `${head} +${rest} tool${rest > 1 ? 's' : ''}` : head;
+}
 
-  const entries = [...counts.entries()].slice(0, 3);
-  const parts = entries.map(([name, count]) => {
-    // Check for Agent subagent_type
-    if (name === 'Agent') {
-      const agentTool = tools.find(t => normalizeToolName(t.toolName) === 'Agent');
-      const subtype = extractAgentSubtype(agentTool?.toolInput);
-      if (subtype) return `Agent(${subtype})`;
+function makeBar(filled: number, width: number): { fill: string; empty: string } {
+  const f = Math.max(0, Math.min(width, filled));
+  return { fill: '▓'.repeat(f), empty: '░'.repeat(width - f) };
+}
+
+function ctxColor(pct: number): string {
+  if (pct >= 0.8) return C.mauve;
+  if (pct >= 0.6) return C.yellow;
+  return C.normal;
+}
+
+function isRealCompaction(call: SSECall): boolean {
+  return !!call.compactionDetected;
+}
+
+function hasRealContent(text: string): boolean {
+  return /[a-zA-Z]{4,}/.test(text ?? '');
+}
+
+function computeCostBreakdown(calls: SSECall[]) {
+  const totalCost = calls.reduce((s, c) => s + c.cost, 0);
+  const totalTokens = calls.reduce(
+    (s, c) => s + c.tokenInput + (c.tokenCacheRead ?? 0) + c.tokenOutput, 0,
+  );
+  const ppt = totalTokens > 0 ? totalCost / totalTokens : 0;
+  let skillTok = 0, ctxTok = 0;
+  for (const c of calls) {
+    const bd = c.systemBreakdown;
+    const totalIn = totalInputTokens(c);
+    if (bd) {
+      const sk = (bd.skills ?? []).reduce((s: number, x: any) => s + (x.tokens ?? 0), 0);
+      const sys = bd.baseClaude?.tokens ?? 0;
+      skillTok += sk;
+      ctxTok += Math.max(0, totalIn - sys - sk);
+    } else {
+      ctxTok += totalIn;
     }
-    return count > 1 ? `${name}×${count}` : name;
-  });
-
-  return parts.join(', ');
+  }
+  const skillCost = skillTok * ppt;
+  const contextCost = ctxTok * ppt;
+  const workCost = Math.max(0, totalCost - skillCost - contextCost);
+  return { skillCost, contextCost, workCost, totalCost, skillTokens: skillTok };
 }
 
-function normalizeToolName(name: string): string {
-  const map: Record<string, string> = {
-    read_file: 'Read', view: 'Read', cat: 'Read',
-    bash: 'Bash', run_command: 'Bash',
-    glob: 'Glob', grep: 'Grep', search: 'Grep',
-  };
-  return map[name] ?? name;
+// ─── Insights ─────────────────────────────────────────────
+
+interface Insight {
+  text: string;
+  color: string;
+  priority: number; // lower = more urgent
 }
 
-function extractAgentSubtype(input?: string): string | null {
-  if (!input) return null;
-  // Try JSON parse first
-  const val = extractFromJson(input, ['subagent_type']);
-  if (val) return val;
-  // Fallback to regex
-  const m = input.match(/subagent_type['":\s]+(\w+)/);
-  return m ? m[1] : null;
-}
+function deriveInsights(calls: SSECall[]): Insight[] {
+  if (calls.length === 0) return [];
+  const out: Insight[] = [];
 
-/** Extract just the filename from a toolInput (may be JSON or plain path) */
-function extractFilename(input: string): string {
-  // Try to parse as JSON first (e.g. {"file_path":"/foo/bar.ts"})
-  const path = extractFromJson(input, ['file_path', 'path']) ?? input;
-  const m = path.match(/([^/\\]+\.[a-z]+)/i);
-  return m ? m[1] : 'file';
-}
+  const latest = calls[calls.length - 1];
+  const totalIn = totalInputTokens(latest);
+  const ctxPct = totalIn / CONTEXT_LIMIT;
 
-/** Extract a bash command from toolInput (may be JSON or plain string) */
-function extractBashCommand(input: string): string {
-  return extractFromJson(input, ['command', 'cmd']) ?? input.split('\n')[0];
-}
-
-/** Try to extract a field from JSON-encoded toolInput */
-function extractFromJson(input: string, keys: string[]): string | null {
-  if (!input.startsWith('{')) return null;
-  try {
-    const obj = JSON.parse(input);
-    for (const key of keys) {
-      if (typeof obj[key] === 'string') return obj[key];
+  // ── 1. CONTEXT PREDICTION ──
+  if (ctxPct >= 0.95) {
+    out.push({ text: '⚠ compaction imminent — next call likely', color: C.red, priority: 0 });
+  } else if (ctxPct >= 0.8) {
+    // Estimate calls remaining via avg growth
+    const window = calls.slice(-5);
+    let avgGrowth = 0;
+    if (window.length >= 2) {
+      const deltas: number[] = [];
+      for (let i = 1; i < window.length; i++) {
+        const d = totalInputTokens(window[i]) - totalInputTokens(window[i - 1]);
+        if (d > 0) deltas.push(d);
+      }
+      if (deltas.length > 0) {
+        avgGrowth = deltas.reduce((a, b) => a + b, 0) / deltas.length;
+      }
     }
-  } catch {}
-  return null;
-}
-
-/** Summarize bash result to a short string — NEVER raw output */
-function summarizeBashResult(result?: string): string {
-  if (!result) return 'done';
-  const lines = result.split('\n').filter(l => l.trim());
-  if (lines.length === 0) return 'done';
-  if (lines.length === 1) {
-    const first = lines[0].trim();
-    // Reject ls/find output, file trees, etc.
-    if (/^[drwx-]{10}/.test(first)) return '1 item';
-    if (first.startsWith('/') || first.startsWith('./')) return 'done';
-    if (first.length <= 30 && !first.includes('\t')) return first;
-    return 'done';
-  }
-  // Multiple lines — check for ls-style output
-  if (lines.some(l => /^[drwx-]{10}/.test(l.trim()))) return `${lines.length} items`;
-  return `${lines.length} lines`;
-}
-
-// ═══════════════════════════════════════════════════════════
-// A. SESSION HEADER
-// ═══════════════════════════════════════════════════════════
-
-function SessionHeader({ sessionKey, title, width }: {
-  sessionKey: string; title: string; width: number;
-}) {
-  const content = `── ${sessionKey}  "${truncate(title, 50)}"  `;
-  const fill = '─'.repeat(Math.max(0, width - content.length));
-  return <Text color={C.dim}>{content + fill}</Text>;
-}
-
-// ═══════════════════════════════════════════════════════════
-// B. CALL PRIMARY LINE
-// ═══════════════════════════════════════════════════════════
-
-function CallPrimaryLine({ call, allCalls, cursor }: {
-  call: SSECall; allCalls: SSECall[]; cursor?: boolean;
-}) {
-  const idx = circledNumber(call.callIndex).padStart(3);
-  const lat = formatLatency(call.latencyMs).padStart(6);
-  const cached = isFullyCached(call);
-  const bothZero = call.tokenInput === 0 && (call.tokenCacheRead ?? 0) === 0;
-  const tokStr = cached ? '⚡ cached' : bothZero ? 'cached' : formatTokens(totalInputTokens(call));
-  const tok = tokStr.padStart(10);
-  const costVal = cached ? '$0.00' : formatCost(call.cost);
-  const cost = costVal.padStart(7);
-  const summary = truncate(buildSummary(call, allCalls), 60);
-  const isCompaction = call.compactionDetected;
-
-  // Selected row: full mauve background, dark text
-  if (cursor) {
-    const line = `► ${idx}  ${lat}  ${tok}  ${cost}  ${isCompaction ? '⚡ ' : call.status === 'error' ? '✗ ' : ''}${summary}`;
-    return <Text backgroundColor="#c4607a" color="#0F0F0F">{line}</Text>;
-  }
-
-  const prefix = '  ';
-
-  if (isCompaction) {
-    return (
-      <Text>
-        <Text>{prefix}</Text>
-        <Text color={C.mauve}>{idx}  {lat}  {tok}  {cost}  {summary}</Text>
-      </Text>
-    );
-  }
-
-  if (call.status === 'error') {
-    return (
-      <Text>
-        <Text>{prefix}</Text>
-        <Text color={C.normal}>{idx}</Text>
-        <Text color={C.dim}>  {lat}  {tok}  {cost}  </Text>
-        <Text color={C.mauve}>✗ </Text>
-        <Text color={C.dim}>{summary}</Text>
-      </Text>
-    );
-  }
-
-  return (
-    <Text>
-      <Text>{prefix}</Text>
-      <Text color={C.normal}>{idx}</Text>
-      <Text color={C.dim}>  {lat}  </Text>
-      <Text color={bothZero ? C.dim : cached ? C.dim : C.normal}>{tok}</Text>
-      <Text color={C.dim}>  {cost}  {summary}</Text>
-    </Text>
-  );
-}
-
-// ═══════════════════════════════════════════════════════════
-// C. CALL SUBLINES (max 3 total per call)
-// ═══════════════════════════════════════════════════════════
-
-function CallSublines({ call, allCalls }: {
-  call: SSECall; allCalls: SSECall[];
-}) {
-  const subs: React.ReactNode[] = [];
-  const indent = '      ';
-  let count = 0;
-
-  // SKILLS — only on call ①
-  if (call.callIndex === 1 && call.skillsDetected.length > 0 && count < 3) {
-    const skills = call.skillsDetected;
-    const shown = skills.slice(0, 3);
-    const more = skills.length > 3 ? ` · +${skills.length - 3} more` : '';
-    subs.push(
-      <Text key="skills" color={C.dim}>{indent}skills: {shown.join(' · ')}{more}</Text>
-    );
-    count++;
-  }
-
-  // FILES — only when Read calls exist
-  const reads = call.toolCalls.filter(t =>
-    ['Read', 'read_file', 'view', 'cat'].includes(t.toolName)
-  );
-  if (reads.length > 0 && count < 3) {
-    const allNames = [...new Set(reads.map(t => extractFilename(t.toolInput ?? '')))];
-    const names = allNames.slice(0, 3);
-    const remaining = reads.length - names.length;
-    const more = remaining > 0 ? ` · +${remaining} more` : '';
-    subs.push(
-      <Text key="read" color={C.dim}>{indent}read: {names.join(' · ')}{more}</Text>
-    );
-    count++;
-  }
-
-  // BASH — one line total, command → brief result
-  const bashes = call.toolCalls.filter(t =>
-    ['Bash', 'bash', 'run_command'].includes(t.toolName)
-  );
-  if (bashes.length > 0 && count < 3) {
-    const b = bashes[0];
-    const cmd = truncate(extractBashCommand(b.toolInput ?? ''), 40);
-    const result = summarizeBashResult(b.toolResult);
-    const suffix = bashes.length > 1 ? ` (+${bashes.length - 1} more)` : '';
-    subs.push(
-      <Text key="bash" color={C.dim}>{indent}bash: {cmd} → {result}{suffix}</Text>
-    );
-    count++;
-  }
-
-  // COMPACTION △ — max 2, only on compaction calls
-  if (call.compactionDetected && count < 3) {
-    const mc = call.missingContext ?? [];
-    for (const item of mc.slice(0, Math.min(2, 3 - count))) {
-      const text = (item.content ?? '').replace(/\n/g, ' ');
-      subs.push(
-        <Text key={`mc-${subs.length}`} color={C.dim}>
-          {indent}△ "{truncate(text, 55)}"
-        </Text>
-      );
-      count++;
+    const remain = avgGrowth > 0 ? Math.max(1, Math.round((CONTEXT_LIMIT - totalIn) / avgGrowth)) : 0;
+    out.push({
+      text: `⚠ context at ${Math.round(ctxPct * 100)}% — compaction in ~${remain} calls`,
+      color: C.red,
+      priority: 1,
+    });
+  } else if (ctxPct >= 0.5) {
+    const window = calls.slice(-5);
+    let avgGrowth = 0;
+    if (window.length >= 2) {
+      const deltas: number[] = [];
+      for (let i = 1; i < window.length; i++) {
+        const d = totalInputTokens(window[i]) - totalInputTokens(window[i - 1]);
+        if (d > 0) deltas.push(d);
+      }
+      if (deltas.length > 0) avgGrowth = deltas.reduce((a, b) => a + b, 0) / deltas.length;
+    }
+    if (avgGrowth > 0) {
+      const remain = Math.max(1, Math.round((CONTEXT_LIMIT - totalIn) / avgGrowth));
+      if (remain < 30) {
+        out.push({
+          text: `⚠ context at ${Math.round(ctxPct * 100)}% — compaction in ~${remain} calls`,
+          color: C.yellow,
+          priority: 5,
+        });
+      }
     }
   }
 
-  // AGENT — when Agent tool used with subagent_type
-  const agents = call.toolCalls.filter(t =>
-    normalizeToolName(t.toolName) === 'Agent'
-  );
-  if (agents.length > 0 && count < 3 && !call.compactionDetected) {
-    const a = agents[0];
-    const subtype = extractAgentSubtype(a.toolInput) ?? 'general';
-    const result = summarizeBashResult(a.toolResult);
-    subs.push(
-      <Text key="agent" color={C.dim}>{indent}agent: {subtype} → {result}</Text>
-    );
-    count++;
+  // ── 2. LOOP DETECTION ──
+  if (calls.length >= 6) {
+    // Look at last min(20, length) calls
+    const window = calls.slice(-Math.min(20, calls.length));
+    const sigCounts = new Map<string, number>();
+    for (const c of window) {
+      const sig = summarizeTools(c.toolCalls);
+      if (!sig) continue;
+      sigCounts.set(sig, (sigCounts.get(sig) ?? 0) + 1);
+    }
+    let topSig = '';
+    let topCount = 0;
+    for (const [sig, n] of sigCounts) {
+      if (n > topCount) { topSig = sig; topCount = n; }
+    }
+    if (topCount >= 5 && topCount / window.length > 0.5) {
+      out.push({
+        text: `⚠ ${topSig} on ${topCount} of last ${window.length} calls — possible loop`,
+        color: C.red,
+        priority: 2,
+      });
+    }
   }
 
-  if (subs.length === 0) return null;
-  return <Box flexDirection="column">{subs}</Box>;
+  // ── 3. LATENCY SPIKE ──
+  if (calls.length >= 4) {
+    const others = calls.slice(0, -1);
+    const avgLat = others.reduce((s, c) => s + c.latencyMs, 0) / others.length;
+    if (avgLat > 0 && latest.latencyMs > avgLat * 10) {
+      const factor = (latest.latencyMs / avgLat).toFixed(0);
+      out.push({
+        text: `⚠ call (${latest.callIndex}) took ${formatLatency(latest.latencyMs)} — ${factor}× slower than avg`,
+        color: C.yellow,
+        priority: 3,
+      });
+    }
+  }
+
+  // ── 4. COST PACE ──
+  const totalCost = calls.reduce((s, c) => s + c.cost, 0);
+  if (totalCost > 2) {
+    const avgCall = totalCost / calls.length;
+    const totalTime = calls.reduce((s, c) => s + c.latencyMs, 0);
+    const hourly = totalTime > 0 ? (totalCost / (totalTime / 3_600_000)) : 0;
+    out.push({
+      text: `⚠ ${formatCost(totalCost)} spent — ${formatCost(avgCall)}/call · at this pace: ${formatCost(hourly)}/hr`,
+      color: C.yellow,
+      priority: 6,
+    });
+  }
+
+  // ── 6. UPGRADE CTA — high-value moments ──
+  if (totalCost >= 5) {
+    out.push({
+      text: `→ see exactly where ${formatCost(totalCost)} went · starnose.dev/upgrade`,
+      color: C.mauve,
+      priority: 4,
+    });
+  } else if (calls.length >= 40) {
+    out.push({
+      text: `→ ${calls.length} calls this session · pro keeps every session forever · starnose.dev/upgrade`,
+      color: C.mauve,
+      priority: 8,
+    });
+  }
+
+  // ── 5. SKILL WASTE ──
+  const first = calls[0];
+  const bd = first?.systemBreakdown;
+  if (bd && calls.length >= 3) {
+    const skillTok = (bd.skills ?? []).reduce((s: number, x: any) => s + (x.tokens ?? 0), 0);
+    const firstIn = totalInputTokens(first);
+    const ppt = firstIn > 0 ? first.cost / firstIn : 0;
+    const overhead = skillTok * ppt;
+    if (overhead > 0.05) {
+      const totalOverhead = overhead * calls.length;
+      out.push({
+        text: `⚠ ${formatCost(overhead)} skill overhead per call · at ${calls.length} calls: ${formatCost(totalOverhead)}`,
+        color: C.yellow,
+        priority: 7,
+      });
+    }
+  }
+
+  out.sort((a, b) => a.priority - b.priority);
+  return out.slice(0, 3);
+}
+
+// Returns true if this call had >3× session avg latency
+function isSlow(call: SSECall, allCalls: SSECall[]): boolean {
+  if (allCalls.length < 3) return false;
+  const others = allCalls.filter(c => c !== call);
+  const avg = others.reduce((s, c) => s + c.latencyMs, 0) / others.length;
+  return avg > 0 && call.latencyMs > avg * 3;
+}
+
+function isCostly(call: SSECall, allCalls: SSECall[]): boolean {
+  if (allCalls.length < 3) return false;
+  const others = allCalls.filter(c => c !== call);
+  const avg = others.reduce((s, c) => s + c.cost, 0) / others.length;
+  return avg > 0 && call.cost > avg * 3;
 }
 
 // ═══════════════════════════════════════════════════════════
-// ONE CALL ROW = primary line + sublines
+// ZONE 1: SESSION OVERVIEW
 // ═══════════════════════════════════════════════════════════
 
-function CallRow({ call, allCalls, cursor }: {
-  call: SSECall; allCalls: SSECall[]; cursor?: boolean;
+function ZoneOverview({ sessionKey, title, calls, elapsedMs, sessionDone, width }: {
+  sessionKey: string; title: string; calls: SSECall[]; elapsedMs: number; sessionDone: boolean; width: number;
 }) {
+  const latest = calls[calls.length - 1];
+  const totalIn = latest ? totalInputTokens(latest) : 0;
+  const ctxPct = totalIn / CONTEXT_LIMIT;
+  const totalCost = calls.reduce((s, c) => s + c.cost, 0);
+  const avgCost = calls.length > 0 ? totalCost / calls.length : 0;
+
+  const color = ctxColor(ctxPct);
+  const pct = Math.round((totalIn / 200000) * 100)
+  const filled = Math.round((totalIn / 200000) * 40)
+  const empty = 40 - filled
+  const filledChar = chalk.hex('#e8607a')('▓').repeat(filled)
+  const emptyChar = chalk.dim('░').repeat(empty)
+  const bar = '\x1b[0m' + filledChar + emptyChar
+
+  const headerText = `── ${sessionKey}  "${truncate(title || 'untitled', Math.max(10, width - 20))}"  `;
+  const headerFill = '─'.repeat(Math.max(0, width - headerText.length));
+
   return (
     <Box flexDirection="column">
-      <CallPrimaryLine call={call} allCalls={allCalls} cursor={cursor} />
-      <CallSublines call={call} allCalls={allCalls} />
+      <Text color={C.dim}>{headerText + headerFill}</Text>
+      <Text> </Text>
+      <Text>
+        <Text color={C.mid}>  context  </Text>
+        <Text color={C.dim}>[</Text>
+        <Text>{bar}</Text>
+        <Text color={C.dim}>] </Text>
+        <Text color={color}> {String(Math.round(ctxPct * 100)).padStart(3)}%</Text>
+      </Text>
+      <Text>
+        <Text color={C.mid}>  cost     </Text>
+        <Text color={C.normal}>{formatCost(totalCost)}</Text>
+        <Text color={C.dim}>  ·  </Text>
+        <Text color={C.mid}>{formatCost(avgCost)}/call avg</Text>
+        <Text color={C.dim}>  ·  </Text>
+        <Text color={C.mid}>{calls.length} calls</Text>
+      </Text>
+      <Text>
+        <Text color={C.mid}>  time     </Text>
+        <Text color={sessionDone ? C.dim : C.normal}>{formatDuration(elapsedMs)}</Text>
+        {sessionDone && <Text color={C.dim}>  ·  done</Text>}
+        {!sessionDone && <Text color={C.dim}>  running</Text>}
+      </Text>
     </Box>
   );
 }
 
 // ═══════════════════════════════════════════════════════════
-// D. LIVE INDICATOR
+// ZONE 2: RECENT CALLS
 // ═══════════════════════════════════════════════════════════
 
-function LiveIndicator({ live, tick }: {
-  live: LiveState | null; tick: number;
+function CallLine({ call, allCalls, selected }: {
+  call: SSECall; allCalls: SSECall[]; selected: boolean;
 }) {
-  if (!live) {
-    return <Text color={C.dim}>  waiting for claude...</Text>;
-  }
+  const idxStr = `(${call.callIndex})`.padStart(5);
+  const lat = formatLatency(call.latencyMs).padStart(6);
+  const totalIn = totalInputTokens(call);
+  const tok = formatTokens(totalIn).padStart(10);
+  const cost = formatCost(call.cost).padStart(6);
+  const tools = summarizeTools(call.toolCalls);
+  const summary = tools || call.summary || 'response';
 
-  const elapsed = Date.now() - live.startTime;
-  const elapsedStr = formatDuration(elapsed);
-  const pulse = tick % 2 === 0;
-  const dotColor = pulse ? C.mauve : C.dim;
-  const tool = live.toolName ? `   ${live.toolName}` : '';
+  const flags: string[] = [];
+  if (call.compactionDetected) flags.push('⚡');
+  if (isSlow(call, allCalls)) flags.push('⚠ slow');
+  if (isCostly(call, allCalls)) flags.push('⚠ costly');
+  const flagText = flags.length > 0 ? '  ' + flags.join(' ') : '';
+
+  const cursor = selected ? '►' : ' ';
+  if (selected) {
+    return (
+      <Text backgroundColor={C.mauve} color="#0F0F0F">
+        {`${cursor} ${idxStr}  ${lat}  ${tok}  ${cost}  ${truncate(summary, 40)}${flagText}`}
+      </Text>
+    );
+  }
 
   return (
     <Text>
-      <Text color={dotColor}>  ●</Text>
-      <Text color={C.normal}>  running...</Text>
-      <Text color={C.dim}>  [{elapsedStr}]{tool}</Text>
+      <Text color={C.dim}>  </Text>
+      <Text color={C.mid}>{idxStr}  </Text>
+      <Text color={C.dim}>{lat}  </Text>
+      <Text color={C.normal}>{tok}  </Text>
+      <Text color={C.dim}>{cost}  </Text>
+      <Text color={C.normal}>{truncate(summary, 40)}</Text>
+      {flags.length > 0 && <Text color={C.red}>{flagText}</Text>}
     </Text>
   );
 }
 
-// ═══════════════════════════════════════════════════════════
-// F. SUMMARY BOX
-// ═══════════════════════════════════════════════════════════
+function CompactionBlock({ call }: { call: SSECall }) {
+  const before = call.tokensBeforeCompaction ?? 0;
+  const after = totalInputTokens(call);
+  const lost = Math.max(0, before - after);
+  const real = (call.missingContext ?? []).filter((m: any) => hasRealContent(m?.content ?? ''));
+  return (
+    <Box flexDirection="column">
+      <Text color={C.mauve}>  ⚡ compaction: {formatTokens(before)} → {formatTokens(after)}  lost {formatTokens(lost)}</Text>
+      {real.slice(0, 2).map((m: any, i: number) => (
+        <Text key={i} color={C.dim}>     △ "{truncate((m.content ?? '').replace(/\n/g, ' '), 60)}"</Text>
+      ))}
+    </Box>
+  );
+}
 
-function SummaryBox({ calls, sessionKey }: {
-  calls: SSECall[]; sessionKey: string;
+function ZoneRecentCalls({ calls, mode, cursor }: {
+  calls: SSECall[]; mode: Mode; cursor: number;
 }) {
-  const totalTok = calls.reduce((s, c) => s + totalInputTokens(c) + c.tokenOutput, 0);
-  const totalCostVal = calls.reduce((s, c) => s + c.cost, 0);
-  const totalLat = calls.reduce((s, c) => s + c.latencyMs, 0);
+  if (calls.length === 0) {
+    return <Text color={C.dim}>  waiting for first call...</Text>;
+  }
 
-  const dim = chalk.hex(C.dim);
-  const norm = chalk.hex(C.normal);
+  // BROWSE: show all calls
+  if (mode === 'browse') {
+    return (
+      <Box flexDirection="column">
+        {calls.map((call, i) =>
+          call.compactionDetected
+            ? <CompactionBlock key={`c-${call.callIndex}`} call={call} />
+            : <CallLine key={call.callIndex} call={call} allCalls={calls} selected={i === cursor} />
+        )}
+      </Box>
+    );
+  }
 
-  const line1 = `${norm('done')}  ${sessionKey}  ·  ${formatDuration(totalLat)}`;
-  const line2 = `${norm(`${calls.length} calls`)}  ·  ${formatTokens(totalTok)}  ·  ${formatCost(totalCostVal)}`;
-  const line3 = `→ snose dig to inspect`;
+  // STREAM: show pinned (call ① + compactions) + last 5 non-pinned recent
+  const recentLimit = 5;
+  const pinnedCall1 = calls[0];
+  const compactions = calls.filter(c => c.compactionDetected && c !== pinnedCall1);
+  const tail = calls.slice(-recentLimit);
+  const tailSet = new Set(tail);
+  const pinnedSet = new Set<SSECall>();
+  if (pinnedCall1 && !tailSet.has(pinnedCall1)) pinnedSet.add(pinnedCall1);
+  for (const c of compactions) {
+    if (!tailSet.has(c)) pinnedSet.add(c);
+  }
 
-  const boxStr = box([line1, line2, line3], 53);
-  return <Text color={C.dim}>{boxStr}</Text>;
+  // Render pinned first (in their natural order), then tail
+  const pinnedOrdered = calls.filter(c => pinnedSet.has(c));
+
+  // ── Inline subline dedup per spec ──
+  // Skills subline appears ONLY on call ① (the very first call) — handled by Call1Header.
+  // Reads subline: only when read file set changes from previous call in the tail.
+  let lastReadsKey = '';
+
+  return (
+    <Box flexDirection="column">
+      {pinnedOrdered.map(call =>
+        call.compactionDetected
+          ? <CompactionBlock key={`pc-${call.callIndex}`} call={call} />
+          : <Call1Header key={`p-${call.callIndex}`} call={call} />
+      )}
+      {pinnedOrdered.length > 0 && tail.length > 0 && (
+        <Text color={C.dim}>  ⋮</Text>
+      )}
+      {tail.map(call => {
+        if (call.compactionDetected) {
+          lastReadsKey = '';
+          return <CompactionBlock key={`tc-${call.callIndex}`} call={call} />;
+        }
+
+        const readFiles = (call.toolCalls || [])
+          .filter(t => ['Read', 'read_file', 'view'].includes(t.toolName))
+          .map(t => {
+            try {
+              const obj = JSON.parse(t.toolInput ?? '');
+              const fp = obj.file_path ?? obj.path ?? '';
+              return (String(fp).split('/').pop() || '').trim();
+            } catch { return ''; }
+          })
+          .filter(f => f.length > 2);
+        const readsKey = [...new Set(readFiles)].sort().join('|');
+        const showReads = readsKey !== '' && readsKey !== lastReadsKey;
+        if (showReads) lastReadsKey = readsKey;
+
+        return (
+          <Box key={call.callIndex} flexDirection="column">
+            <CallLine call={call} allCalls={calls} selected={false} />
+            {showReads && (
+              <Text color={C.dim}>       read: {[...new Set(readFiles)].slice(0, 3).join(' · ')}{readFiles.length > 3 ? ` · +${readFiles.length - 3}` : ''}</Text>
+            )}
+          </Box>
+        );
+      })}
+    </Box>
+  );
+}
+
+function Call1Header({ call }: { call: SSECall }) {
+  const totalIn = totalInputTokens(call);
+  const pct = totalIn / CONTEXT_LIMIT;
+  const bar = makeBar(Math.round(pct * 28), 28);
+  const skills: { name: string; tokens: number }[] = call.systemBreakdown?.skills ?? [];
+  const sortedSkills = [...skills].sort((a, b) => b.tokens - a.tokens);
+  const shown = sortedSkills.slice(0, 3).map(s => `${s.name}(${formatTokens(s.tokens)})`);
+  const more = Math.max(0, sortedSkills.length - 3);
+  return (
+    <Box flexDirection="column">
+      <Text>
+        <Text color={C.mid}>  ① system loaded  </Text>
+        <Text color={ctxColor(pct)}>{bar.fill}</Text>
+        <Text color={C.bgDim}>{bar.empty}</Text>
+        <Text color={C.dim}>  {String(Math.round(pct * 100)).padStart(3)}%</Text>
+      </Text>
+      {shown.length > 0 && (
+        <Text color={C.dim}>     skills: {shown.join(' · ')}{more > 0 ? ` · +${more}` : ''}</Text>
+      )}
+    </Box>
+  );
 }
 
 // ═══════════════════════════════════════════════════════════
-// STATUS BAR
+// ZONE 3: ACTIVE INSIGHTS
 // ═══════════════════════════════════════════════════════════
+
+function ZoneInsights({ calls }: { calls: SSECall[] }) {
+  const insights = deriveInsights(calls);
+  if (insights.length === 0) return null;
+  return (
+    <Box flexDirection="column">
+      {insights.map((ins, i) => (
+        <Text key={i} color={ins.color}>  {ins.text}</Text>
+      ))}
+    </Box>
+  );
+}
+
+function SessionCompleteBox({ calls, sessionKey: _sessionKey }: {
+  calls: SSECall[]; sessionKey: string;
+}) {
+  const totalTok = calls.reduce((s, c) => s + totalInputTokens(c) + c.tokenOutput, 0);
+  const totalLat = calls.reduce((s, c) => s + c.latencyMs, 0);
+  const bd = computeCostBreakdown(calls);
+  const skillPct = bd.totalCost > 0 ? Math.round((bd.skillCost / bd.totalCost) * 100) : 0;
+  const histPct = bd.totalCost > 0 ? Math.round((bd.contextCost / bd.totalCost) * 100) : 0;
+  const workPct = bd.totalCost > 0 ? Math.round((bd.workCost / bd.totalCost) * 100) : 0;
+
+  const W = 50;
+  const top = '┌' + '─'.repeat(W - 2) + '┐';
+  const bot = '└' + '─'.repeat(W - 2) + '┘';
+  const pad = (s: string) => s.padEnd(W - 4);
+
+  return (
+    <Box flexDirection="column">
+      <Text color={C.mid}>  session complete</Text>
+      <Text color={C.dim}>  {top}</Text>
+      <Text>
+        <Text color={C.dim}>  │  </Text>
+        <Text color={C.normal}>{pad(`${calls.length} calls  ·  ${formatTokens(totalTok)}  ·  ${formatCost(bd.totalCost)}  ·  ${formatDuration(totalLat)}`)}</Text>
+        <Text color={C.dim}>│</Text>
+      </Text>
+      <Text>
+        <Text color={C.dim}>  │  </Text>
+        <Text color={C.mid}>{pad(`skill     ${formatCost(bd.skillCost).padEnd(7)} ${String(skillPct).padStart(3)}%`)}</Text>
+        <Text color={C.dim}>│</Text>
+      </Text>
+      <Text>
+        <Text color={C.dim}>  │  </Text>
+        <Text color={C.mid}>{pad(`history   ${formatCost(bd.contextCost).padEnd(7)} ${String(histPct).padStart(3)}%`)}</Text>
+        <Text color={C.dim}>│</Text>
+      </Text>
+      <Text>
+        <Text color={C.dim}>  │  </Text>
+        <Text color={C.mid}>{pad(`work      ${formatCost(bd.workCost).padEnd(7)} ${String(workPct).padStart(3)}%`)}</Text>
+        <Text color={C.dim}>│</Text>
+      </Text>
+      {workPct < 10 && (
+        <Text>
+          <Text color={C.dim}>  │  </Text>
+          <Text color={C.red}>{pad(`⚠ only ${workPct}% was actual work`)}</Text>
+          <Text color={C.dim}>│</Text>
+        </Text>
+      )}
+      <Text>
+        <Text color={C.dim}>  │  </Text>
+        <Text color={C.dim}>{pad('→ snose dig to inspect')}</Text>
+        <Text color={C.dim}>│</Text>
+      </Text>
+      <Text>
+        <Text color={C.dim}>  │  </Text>
+        <Text color={C.mauve}>{pad('→ keep every session forever · starnose.dev/upgrade')}</Text>
+        <Text color={C.dim}>│</Text>
+      </Text>
+      <Text>
+        <Text color={C.dim}>  │  </Text>
+        <Text color={C.dim}>{pad('  free tier keeps this session for 24h only')}</Text>
+        <Text color={C.dim}>│</Text>
+      </Text>
+      <Text color={C.mauve}>  {bot}</Text>
+    </Box>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════
+// LIVE INDICATOR + STATUS BAR
+// ═══════════════════════════════════════════════════════════
+
+function LiveIndicator({ live, tick }: { live: LiveState | null; tick: number }) {
+  if (!live) {
+    return <Text color={C.dim}>  waiting for claude...</Text>;
+  }
+  const elapsed = Date.now() - live.startTime;
+  const pulse = tick % 2 === 0;
+  const dotColor = pulse ? C.mauve : C.dim;
+  const tool = live.toolName ? `   ${live.toolName}` : '';
+  return (
+    <Text>
+      <Text color={dotColor}>  ●</Text>
+      <Text color={C.normal}>  running...</Text>
+      <Text color={C.dim}>  [{formatDuration(elapsed)}]{tool}</Text>
+    </Text>
+  );
+}
 
 function StatusBar({ mode }: { mode: Mode }) {
   switch (mode) {
     case 'stream':
       return <Text><Text color={C.mauve}>  LIVE</Text><Text color={C.dim}>  space browse · q quit</Text></Text>;
     case 'browse':
-      return <Text><Text color={C.mauve}>  BROWSE</Text><Text color={C.dim}>  ↑↓ nav · enter inspect · space stream · q quit</Text></Text>;
+      return <Text><Text color={C.mauve}>  BROWSE</Text><Text color={C.dim}>  ↑↓ navigate · enter inspect · space stream · q quit</Text></Text>;
     case 'detail':
-      return <Text><Text color={C.mauve}>  DETAIL</Text><Text color={C.dim}>  ↑↓ scroll · esc back</Text></Text>;
+      return <Text><Text color={C.mauve}>  DETAIL</Text><Text color={C.dim}>  esc back</Text></Text>;
   }
 }
 
@@ -458,35 +689,33 @@ function SenseApp({ initialCalls, initialSession }: {
   const [sessionKey, setSessionKey] = useState(initialSession?.key ?? '...');
   const [sessionTitle, setSessionTitle] = useState(initialSession?.title ?? '');
   const [sessionId, setSessionId] = useState(initialSession?.id ?? '');
+  const [sessionStartedAt] = useState(Date.now());
   const [cursor, setCursor] = useState(Math.max(0, initialCalls.length - 1));
   const [live, setLive] = useState<LiveState | null>(null);
   const [tick, setTick] = useState(0);
-  const [showSummary, setShowSummary] = useState(false);
+  const [sessionDone, setSessionDone] = useState(false);
   const [detailCallData, setDetailCallData] = useState<CallData | null>(null);
 
   const lastCallTimeRef = useRef(Date.now());
   const callsRef = useRef(calls);
   callsRef.current = calls;
 
-  // Tick timer for live indicator pulse + summary check
+  // Tick timer + session done detection
   useEffect(() => {
     const interval = setInterval(() => {
       setTick(t => t + 1);
-
-      // Summary box after 30s inactivity
-      if (callsRef.current.length > 0 && !showSummary) {
+      if (callsRef.current.length > 0 && !sessionDone) {
         if (Date.now() - lastCallTimeRef.current > 30_000) {
-          setShowSummary(true);
+          setSessionDone(true);
         }
       }
     }, 500);
     return () => clearInterval(interval);
-  }, [showSummary]);
+  }, [sessionDone]);
 
   // SSE connection
   useEffect(() => {
     const es = new EventSource(`${getBaseUrl()}/internal/events`);
-
     es.onmessage = (event) => {
       let data: any;
       try { data = JSON.parse(event.data); } catch { return; }
@@ -498,7 +727,7 @@ function SenseApp({ initialCalls, initialSession }: {
           startTime: Date.now(),
           toolName: data.toolName ?? null,
         });
-        setShowSummary(false);
+        setSessionDone(false);
       }
 
       if (data.type === 'call_progress') {
@@ -508,62 +737,39 @@ function SenseApp({ initialCalls, initialSession }: {
       if (data.type === 'call_completed') {
         setLive(null);
         lastCallTimeRef.current = Date.now();
-        setShowSummary(false);
+        setSessionDone(false);
 
         const call = data.call as SSECall;
-        // Ensure arrays are arrays not strings
-        if (typeof call.toolCalls === 'string') {
-          call.toolCalls = safeParse(call.toolCalls as any, []);
-        }
-        if (typeof call.skillsDetected === 'string') {
-          call.skillsDetected = safeParse(call.skillsDetected as any, []);
-        }
-        if (typeof call.missingContext === 'string') {
-          call.missingContext = safeParse(call.missingContext as any, []);
-        }
+        if (typeof call.toolCalls === 'string') call.toolCalls = safeParse(call.toolCalls as any, []);
+        if (typeof call.skillsDetected === 'string') call.skillsDetected = safeParse(call.skillsDetected as any, []);
+        if (typeof call.missingContext === 'string') call.missingContext = safeParse(call.missingContext as any, []);
 
         setCalls(prev => {
-          // Detect new session (different sessionId)
           if (data.sessionId && data.sessionId !== sessionId) {
             setSessionId(data.sessionId);
             setSessionKey(data.key ?? sessionKey);
             setSessionTitle(data.title ?? '');
             return [call];
           }
+          const idx = prev.findIndex(c => c.callIndex === call.callIndex);
+          if (idx >= 0) {
+            const next = prev.slice();
+            next[idx] = call;
+            return next;
+          }
           return [...prev, call];
         });
-        setCursor(prev => prev + 1);
       }
     };
-
     return () => es.close();
   }, [sessionId]);
 
-  // Keyboard
-  useInput((input, key) => {
+  // Update cursor when new calls arrive (in stream mode)
+  useEffect(() => {
     if (mode === 'stream') {
-      if (input === ' ') {
-        setMode('browse');
-        setCursor(Math.max(0, calls.length - 1));
-      }
-      if (input === 'q') exit();
-    } else if (mode === 'browse') {
-      if (key.upArrow) setCursor(c => Math.max(0, c - 1));
-      if (key.downArrow) setCursor(c => Math.min(calls.length - 1, c + 1));
-      if (key.return && calls.length > 0) {
-        // Load full CallData for detail view
-        loadDetailCall(cursor);
-      }
-      if (input === ' ') setMode('stream');
-      if (input === 'q') exit();
-    } else if (mode === 'detail') {
-      // DetailView handles its own input; esc goes back
-      if (key.escape) {
-        setMode('browse');
-        setDetailCallData(null);
-      }
+      setCursor(Math.max(0, calls.length - 1));
     }
-  }, { isActive: mode !== 'detail' });
+  }, [calls.length, mode]);
 
   const loadDetailCall = useCallback(async (idx: number) => {
     if (!sessionId) return;
@@ -577,53 +783,98 @@ function SenseApp({ initialCalls, initialSession }: {
     } catch {}
   }, [sessionId, calls]);
 
+  // Keyboard
+  useInput((input, key) => {
+    if (mode === 'stream') {
+      if (input === ' ') {
+        setMode('browse');
+        setCursor(Math.max(0, calls.length - 1));
+      }
+      if (input === 'q') exit();
+    } else if (mode === 'browse') {
+      if (key.upArrow) setCursor(c => Math.max(0, c - 1));
+      if (key.downArrow) setCursor(c => Math.min(calls.length - 1, c + 1));
+      if (key.return && calls.length > 0) loadDetailCall(cursor);
+      if (input === ' ') setMode('stream');
+      if (input === 'q') exit();
+    } else if (mode === 'detail') {
+      if (key.escape) {
+        setMode('browse');
+        setDetailCallData(null);
+      }
+    }
+  }, { isActive: mode !== 'detail' });
+
   // ── RENDER ──
 
-  // Detail overlay — full screen
   if (mode === 'detail' && detailCallData) {
     return (
       <DetailView
         call={detailCallData}
-        onBack={() => { setMode('browse'); setDetailCallData(null); }}
+        width={width}
+        isActive={true}
+        onBlur={() => { setMode('browse'); setDetailCallData(null); }}
       />
     );
   }
 
+  const elapsedMs = sessionDone
+    ? (lastCallTimeRef.current - sessionStartedAt)
+    : (Date.now() - sessionStartedAt);
+
+  const sep = '─'.repeat(Math.max(20, width - 2));
+
   return (
     <Box flexDirection="column">
-      {/* A. Session header */}
-      <SessionHeader sessionKey={sessionKey} title={sessionTitle} width={width} />
-      <Text>{' '}</Text>
+      {/* ZONE 1 */}
+      <ZoneOverview
+        sessionKey={sessionKey}
+        title={sessionTitle}
+        calls={calls}
+        elapsedMs={elapsedMs}
+        sessionDone={sessionDone}
+        width={width}
+      />
 
-      {/* B+C. Call list */}
-      {calls.length === 0 && !live && (
-        <Text color={C.dim}>  waiting for claude...</Text>
-      )}
+      <Text> </Text>
+      <Text color={C.dim}>{sep}</Text>
+      <Text> </Text>
 
-      {calls.map((call, i) => (
-        <CallRow
-          key={`${call.callIndex}-${i}`}
-          call={call}
-          allCalls={calls}
-          cursor={mode === 'browse' && i === cursor}
-        />
-      ))}
+      {/* ZONE 2 */}
+      <ZoneRecentCalls calls={calls} mode={mode} cursor={cursor} />
 
-      {/* Spacing after calls */}
-      {calls.length > 0 && <Text>{' '}</Text>}
+      {(() => {
+        const showZone3 = (sessionDone && calls.length > 0) || deriveInsights(calls).length > 0;
+        if (!showZone3) {
+          return (
+            <>
+              <Text> </Text>
+              <Text color={C.dim}>{sep}</Text>
+            </>
+          );
+        }
+        return (
+          <>
+            <Text> </Text>
+            <Text color={C.dim}>{sep}</Text>
+            <Text> </Text>
+            {sessionDone && calls.length > 0 ? (
+              <SessionCompleteBox calls={calls} sessionKey={sessionKey} />
+            ) : (
+              <ZoneInsights calls={calls} />
+            )}
+            <Text> </Text>
+            <Text color={C.dim}>{sep}</Text>
+          </>
+        );
+      })()}
 
-      {/* D. Live indicator — stream mode only */}
-      {mode === 'stream' && !showSummary && (
+      {/* Live indicator */}
+      {mode === 'stream' && !sessionDone && (
         <LiveIndicator live={live} tick={tick} />
       )}
 
-      {/* F. Summary box — stream mode only */}
-      {mode === 'stream' && showSummary && calls.length > 0 && (
-        <SummaryBox calls={calls} sessionKey={sessionKey} />
-      )}
-
-      {/* Status bar */}
-      <Text>{' '}</Text>
+      <Text> </Text>
       <StatusBar mode={mode} />
     </Box>
   );
@@ -640,7 +891,6 @@ export async function commandSense(): Promise<void> {
     process.exit(1);
   }
 
-  // Load current session + existing calls before rendering
   let initialSession: { key: string; title: string; id: string } | null = null;
   let initialCalls: SSECall[] = [];
 
@@ -658,3 +908,6 @@ export async function commandSense(): Promise<void> {
   );
   await waitUntilExit();
 }
+
+// Suppress unused warnings for symbols kept for clarity
+void isRealCompaction;
