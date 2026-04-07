@@ -12,6 +12,9 @@ interface Props {
 
 type FilterKey = 'all' | 'today' | 'expensive' | 'failed' | 'long';
 const FILTERS: FilterKey[] = ['all', 'today', 'expensive', 'failed', 'long'];
+type SortKey = 'cost' | 'tokens' | 'calls';
+type SortDir = 'asc' | 'desc';
+const SORTS: SortKey[] = ['cost', 'tokens', 'calls'];
 
 const ONE_DAY = 24 * 60 * 60 * 1000;
 
@@ -157,6 +160,11 @@ function truncate(s: string, max: number): string {
   return s.slice(0, max - 1) + '…';
 }
 
+function clipLine(s: string, max: number): string {
+  if (max <= 0) return '';
+  return s.length <= max ? s : s.slice(0, Math.max(0, max - 1)) + '…';
+}
+
 export function SessionsView({ onBack, onSelect, currentSessionId }: Props) {
   const pickSession = (sid: string) => onSelect(sid);
   const { stdout } = useStdout();
@@ -166,6 +174,13 @@ export function SessionsView({ onBack, onSelect, currentSessionId }: Props) {
   const [sessions, setSessions] = useState<SessionData[]>([]);
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [filterIdx, setFilterIdx] = useState(0);
+  const [sortIdx, setSortIdx] = useState(0);
+  const [sortDirByKey, setSortDirByKey] = useState<Record<SortKey, SortDir>>({
+    cost: 'desc',
+    tokens: 'desc',
+    calls: 'desc',
+  });
+  const [focusZone, setFocusZone] = useState<'filters' | 'sorts' | 'list'>('list');
   const [searching, setSearching] = useState(false);
   const [query, setQuery] = useState('');
 
@@ -189,6 +204,8 @@ export function SessionsView({ onBack, onSelect, currentSessionId }: Props) {
   }, [cleanSessions]);
 
   const currentFilter = FILTERS[filterIdx];
+  const activeSort = SORTS[sortIdx];
+  const activeSortDir = sortDirByKey[activeSort];
 
   // Filter + search
   const visible = useMemo(() => {
@@ -196,8 +213,23 @@ export function SessionsView({ onBack, onSelect, currentSessionId }: Props) {
     if (searching && query.trim()) {
       list = list.filter(s => matchesQuery(s, query));
     }
+    list = [...list].sort((a, b) => {
+      let av = 0;
+      let bv = 0;
+      if (activeSort === 'cost') {
+        av = a.total_cost ?? 0;
+        bv = b.total_cost ?? 0;
+      } else if (activeSort === 'tokens') {
+        av = a.total_tokens ?? 0;
+        bv = b.total_tokens ?? 0;
+      } else {
+        av = a.call_count ?? 0;
+        bv = b.call_count ?? 0;
+      }
+      return activeSortDir === 'asc' ? av - bv : bv - av;
+    });
     return list;
-  }, [cleanSessions, currentFilter, searching, query]);
+  }, [cleanSessions, currentFilter, searching, query, activeSort, activeSortDir]);
 
   // Clamp selection when list changes
   useEffect(() => {
@@ -242,22 +274,40 @@ export function SessionsView({ onBack, onSelect, currentSessionId }: Props) {
       setSelectedIndex(0);
       return;
     }
+    if (key.tab) {
+      setFocusZone(z => z === 'filters' ? 'sorts' : z === 'sorts' ? 'list' : 'filters');
+      return;
+    }
     if (key.leftArrow) {
-      setFilterIdx(i => (i - 1 + FILTERS.length) % FILTERS.length);
-      setSelectedIndex(0);
+      if (focusZone === 'filters') {
+        setFilterIdx(i => (i - 1 + FILTERS.length) % FILTERS.length);
+        setSelectedIndex(0);
+      } else if (focusZone === 'sorts') {
+        setSortIdx(i => (i - 1 + SORTS.length) % SORTS.length);
+      }
       return;
     }
     if (key.rightArrow) {
-      setFilterIdx(i => (i + 1) % FILTERS.length);
-      setSelectedIndex(0);
+      if (focusZone === 'filters') {
+        setFilterIdx(i => (i + 1) % FILTERS.length);
+        setSelectedIndex(0);
+      } else if (focusZone === 'sorts') {
+        setSortIdx(i => (i + 1) % SORTS.length);
+      }
       return;
     }
-    if (key.return && visible.length > 0) {
-      pickSession(visible[selectedIndex].id);
+    if (key.return) {
+      if (focusZone === 'sorts') {
+        const k = SORTS[sortIdx];
+        setSortDirByKey(prev => ({ ...prev, [k]: prev[k] === 'asc' ? 'desc' : 'asc' }));
+        setSelectedIndex(0);
+        return;
+      }
+      if (visible.length > 0) pickSession(visible[selectedIndex].id);
       return;
     }
-    if (key.upArrow) setSelectedIndex(i => Math.max(0, i - 1));
-    if (key.downArrow) setSelectedIndex(i => Math.min(visible.length - 1, i + 1));
+    if (key.upArrow && focusZone === 'list') setSelectedIndex(i => Math.max(0, i - 1));
+    if (key.downArrow && focusZone === 'list') setSelectedIndex(i => Math.min(visible.length - 1, i + 1));
   });
 
   // ── Render ──
@@ -266,9 +316,9 @@ export function SessionsView({ onBack, onSelect, currentSessionId }: Props) {
   const fullWidth = Math.max(0, width - 4);
   const sepLine = '─'.repeat(Math.max(20, Math.min(60, width - 6)));
 
-  const headerRows = searching ? 7 : 4;
+  const headerRows = searching ? 8 : 4;
   const footerRows = searching ? 2 : 0;
-  const rowsPerItem = 3; // line1 + title + divider
+  const rowsPerItem = 4; // conservative: line wraps + divider safety margin
   const maxItems = Math.max(5, Math.floor((height - headerRows - footerRows) / rowsPerItem));
   const start = Math.max(0, Math.min(selectedIndex - Math.floor(maxItems / 2), Math.max(0, visible.length - maxItems)));
   const end = Math.min(visible.length, start + maxItems);
@@ -296,10 +346,29 @@ export function SessionsView({ onBack, onSelect, currentSessionId }: Props) {
             );
           })}
         </Box>
+        <Box>
+          <Text color="#505050">sort  </Text>
+          {SORTS.map((s, i) => {
+            const isSelected = i === sortIdx;
+            const dir = sortDirByKey[s] === 'asc' ? 'a-z' : 'z-a';
+            const selectedInFocus = isSelected && focusZone === 'sorts';
+            return (
+              <Text key={s}>
+                <Text
+                  backgroundColor={selectedInFocus ? '#e62050' : undefined}
+                  color={selectedInFocus ? '#0F0F0F' : '#A0A0A0'}
+                >
+                  [ {s} {dir} ]
+                </Text>
+                <Text> </Text>
+              </Text>
+            );
+          })}
+        </Box>
         <Text color="#505050">
           {searching
             ? '  type to filter · ↑↓ nav · enter open · esc clear'
-            : '  ←→ filter · / search · ↑↓ nav · enter open · esc back'}
+            : `  tab focus(${focusZone}) · ←→ move · enter ${focusZone === 'sorts' ? 'toggle sort' : 'open'} · / search · esc back`}
         </Text>
       </Box>
 
@@ -332,12 +401,14 @@ export function SessionsView({ onBack, onSelect, currentSessionId }: Props) {
           const status = statusLabel(session);
           const titleText = `"${truncate(session.title ?? '', titleMax)}"`;
           const line1 = `${badge}  ${session.key}  ${formatRelativeTime(session.created_at)}  ${session.call_count} calls  ${formatTokens(session.total_tokens)}  ${formatCost(session.total_cost)}  ${status.text}`;
+          const line1Clipped = clipLine(line1, Math.max(10, fullWidth - 3));
+          const titleClipped = clipLine(titleText, Math.max(10, fullWidth - 12));
 
           if (isSelected) {
             return (
               <Box key={session.id} flexDirection="column">
-                <Text backgroundColor="#e62050" color="#0F0F0F">{('► ' + line1).padEnd(fullWidth)}</Text>
-                <Text backgroundColor="#e62050" color="#0F0F0F">{('  ' + titleText).padEnd(fullWidth)}</Text>
+                <Text backgroundColor="#e62050" color="#0F0F0F">{('► ' + line1Clipped).padEnd(fullWidth)}</Text>
+                <Text backgroundColor="#e62050" color="#0F0F0F">{('  ' + titleClipped).padEnd(fullWidth)}</Text>
                 {i < visible.length - 1 && <Text color="#2A2A2A">  {sepLine}</Text>}
               </Box>
             );
@@ -352,7 +423,7 @@ export function SessionsView({ onBack, onSelect, currentSessionId }: Props) {
                 <Text color="#A0A0A0">{session.call_count} calls  {formatTokens(session.total_tokens)}  {formatCost(session.total_cost)}  </Text>
                 <Text color={status.mauve ? '#e62050' : '#A0A0A0'}>{status.text}</Text>
               </Text>
-              <Text color="#505050">          {titleText}</Text>
+              <Text color="#505050">          {titleClipped}</Text>
               {i < visible.length - 1 && <Text color="#2A2A2A">  {sepLine}</Text>}
             </Box>
           );
