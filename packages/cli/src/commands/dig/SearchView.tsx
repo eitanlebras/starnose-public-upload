@@ -1,98 +1,204 @@
-import React, { useState, useEffect } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { Box, Text, useInput } from 'ink';
 import { SessionData } from './types.js';
 import { fetchApi } from '../../api.js';
-import { formatTokens, formatRelativeTime } from '../../format.js';
+import { formatTokens, formatCost, formatRelativeTime } from '../../format.js';
 
 interface Props {
   onBack: () => void;
   onSelect: (sessionId: string) => void;
 }
 
-interface ParsedFilters {
-  q: string;
-  file: string;
-  skill: string;
-  outcome: string;
-  costOp: string;
-  costVal: string;
+type QuickFilter = 'all' | 'today' | 'failed' | 'active' | 'expensive';
+const QUICK_FILTERS: QuickFilter[] = ['all', 'today', 'failed', 'active', 'expensive'];
+const ONE_DAY = 24 * 60 * 60 * 1000;
+
+type Token =
+  | { kind: 'cmp'; field: 'cost' | 'calls' | 'tok'; op: '>' | '<'; value: number }
+  | { kind: 'sub'; field: 'skill' | 'file'; needle: string }
+  | { kind: 'flag'; flag: 'failed' | 'active' | 'today' }
+  | { kind: 'text'; text: string };
+
+function parseNumberWithSuffix(raw: string): number | null {
+  const m = raw.trim().toLowerCase().match(/^([\d.]+)\s*([km])?$/);
+  if (!m) return null;
+  const n = parseFloat(m[1]);
+  if (isNaN(n)) return null;
+  if (m[2] === 'k') return n * 1000;
+  if (m[2] === 'm') return n * 1_000_000;
+  return n;
 }
 
-function parseQuery(input: string): ParsedFilters {
-  let remaining = input;
-  const f: ParsedFilters = { q: '', file: '', skill: '', outcome: '', costOp: '', costVal: '' };
-
-  const fileMatch = remaining.match(/\bfile:(\S+)/);
-  if (fileMatch) { f.file = fileMatch[1]; remaining = remaining.replace(fileMatch[0], ''); }
-
-  const skillMatch = remaining.match(/\bskill:(\S+)/);
-  if (skillMatch) { f.skill = skillMatch[1]; remaining = remaining.replace(skillMatch[0], ''); }
-
-  const costMatch = remaining.match(/\bcost:([><])(\$?)([\d.]+)/);
-  if (costMatch) { f.costOp = costMatch[1]; f.costVal = costMatch[3]; remaining = remaining.replace(costMatch[0], ''); }
-
-  const outcomeMatch = remaining.match(/\b(failed|success)\b/);
-  if (outcomeMatch) { f.outcome = outcomeMatch[1]; remaining = remaining.replace(outcomeMatch[0], ''); }
-
-  f.q = remaining.trim();
-  return f;
-}
-
-function hasFilters(f: ParsedFilters): boolean {
-  return !!(f.file || f.skill || f.outcome || f.costOp);
-}
-
-function buildUrl(f: ParsedFilters): string {
-  if (!f.q && !hasFilters(f)) return '';
-  if (hasFilters(f)) {
-    const p = new URLSearchParams();
-    if (f.q) p.set('q', f.q);
-    if (f.file) p.set('file', f.file);
-    if (f.skill) p.set('skill', f.skill);
-    if (f.outcome) p.set('outcome', f.outcome);
-    if (f.costOp) { p.set('cost_op', f.costOp); p.set('cost_val', f.costVal); }
-    return `/internal/search-advanced?${p.toString()}`;
+function tokenize(input: string): string[] {
+  const out: string[] = [];
+  let i = 0;
+  while (i < input.length) {
+    while (i < input.length && input[i] === ' ') i++;
+    if (i >= input.length) break;
+    if (input[i] === '"') {
+      const end = input.indexOf('"', i + 1);
+      if (end === -1) { out.push(input.slice(i + 1)); break; }
+      out.push(input.slice(i + 1, end));
+      i = end + 1;
+    } else {
+      let j = i;
+      while (j < input.length && input[j] !== ' ') j++;
+      out.push(input.slice(i, j));
+      i = j;
+    }
   }
-  return `/internal/search?q=${encodeURIComponent(f.q)}`;
+  return out;
+}
+
+function parseQuery(input: string): Token[] {
+  const tokens: Token[] = [];
+  const freeText: string[] = [];
+
+  for (const raw of tokenize(input)) {
+    const lower = raw.toLowerCase();
+    if (lower === 'failed' || lower === 'active' || lower === 'today') {
+      tokens.push({ kind: 'flag', flag: lower as any });
+      continue;
+    }
+
+    const m = raw.match(/^(cost|calls|tok|tokens|skill|file):(.+)$/i);
+    if (m) {
+      const field = m[1].toLowerCase();
+      const rest = m[2];
+
+      if (field === 'cost' || field === 'calls' || field === 'tok' || field === 'tokens') {
+        const opMatch = rest.match(/^([<>])(.+)$/);
+        if (opMatch) {
+          const num = parseNumberWithSuffix(opMatch[2]);
+          if (num !== null) {
+            const f = field === 'tokens' ? 'tok' : field;
+            tokens.push({ kind: 'cmp', field: f as 'cost' | 'calls' | 'tok', op: opMatch[1] as '>' | '<', value: num });
+            continue;
+          }
+        }
+      } else if (field === 'skill' || field === 'file') {
+        tokens.push({ kind: 'sub', field: field as 'skill' | 'file', needle: rest.toLowerCase() });
+        continue;
+      }
+    }
+
+    freeText.push(raw);
+  }
+
+  if (freeText.length > 0) {
+    tokens.push({ kind: 'text', text: freeText.join(' ').toLowerCase() });
+  }
+
+  return tokens;
+}
+
+function matchQuickFilter(s: SessionData, f: QuickFilter): boolean {
+  if (f === 'all') return true;
+  if (f === 'today') return Date.now() - s.created_at < ONE_DAY;
+  if (f === 'failed') return s.last_status === 'failed';
+  if (f === 'active') return s.last_status === 'running' || s.status === 'active';
+  return (s.total_cost ?? 0) > 0.5;
+}
+
+function tokenMatches(s: SessionData, t: Token): boolean {
+  switch (t.kind) {
+    case 'cmp': {
+      let v = 0;
+      if (t.field === 'cost') v = s.total_cost ?? 0;
+      else if (t.field === 'calls') v = s.call_count ?? 0;
+      else v = s.total_tokens ?? 0;
+      return t.op === '>' ? v > t.value : v < t.value;
+    }
+    case 'sub': {
+      const hay = ((s as any)[`${t.field}s`] ?? s.title ?? '').toString().toLowerCase();
+      return hay.includes(t.needle);
+    }
+    case 'flag':
+      if (t.flag === 'failed') return s.last_status === 'failed';
+      if (t.flag === 'active') return s.last_status === 'running' || s.status === 'active';
+      return Date.now() - s.created_at < ONE_DAY;
+    case 'text': {
+      const hay = `${s.title ?? ''} ${s.key ?? ''}`.toLowerCase();
+      return hay.includes(t.text);
+    }
+  }
 }
 
 export function SearchView({ onBack, onSelect }: Props) {
   const [query, setQuery] = useState('');
-  const [results, setResults] = useState<SessionData[]>([]);
+  const [sessions, setSessions] = useState<SessionData[]>([]);
   const [selectedIndex, setSelectedIndex] = useState(0);
+  const [quickFilterIdx, setQuickFilterIdx] = useState(0);
 
-  const filters = parseQuery(query);
-  const showHint = !query.trim();
+  useEffect(() => {
+    fetchApi<SessionData[]>('/internal/sessions')
+      .then((rows) => setSessions(rows.filter(s => (s.call_count ?? 0) > 0 || (s.total_tokens ?? 0) > 0))
+      )
+      .catch(() => setSessions([]));
+  }, []);
+
+  const activeQuick = QUICK_FILTERS[quickFilterIdx];
+  const tokens = useMemo(() => parseQuery(query), [query]);
+
+  const results = useMemo(() => {
+    return sessions
+      .filter((s) => matchQuickFilter(s, activeQuick))
+      .filter((s) => tokens.every((t) => tokenMatches(s, t)));
+  }, [sessions, activeQuick, tokens]);
+
+  useEffect(() => {
+    setSelectedIndex((i) => Math.max(0, Math.min(i, Math.max(0, results.length - 1))));
+  }, [results.length]);
 
   useInput((input, key) => {
     if (key.escape) { onBack(); return; }
-    if (key.return && results.length > 0) { onSelect(results[selectedIndex].id); return; }
-    if (key.upArrow) { setSelectedIndex(Math.max(0, selectedIndex - 1)); return; }
-    if (key.downArrow) { setSelectedIndex(Math.min(results.length - 1, selectedIndex + 1)); return; }
-    if (key.backspace || key.delete) { setQuery(q => q.slice(0, -1)); return; }
-    if (input && !key.ctrl && !key.meta && input.length === 1) { setQuery(q => q + input); }
-  });
 
-  useEffect(() => {
-    const url = buildUrl(filters);
-    if (!url) { setResults([]); return; }
-    const timer = setTimeout(async () => {
-      try {
-        const res = await fetchApi<SessionData[]>(url);
-        setResults(res);
-        setSelectedIndex(0);
-      } catch {
-        setResults([]);
-      }
-    }, 200);
-    return () => clearTimeout(timer);
-  }, [query]);
+    if (key.tab) {
+      setQuickFilterIdx((i) => (i + 1) % QUICK_FILTERS.length);
+      setSelectedIndex(0);
+      return;
+    }
+
+    if (key.return) {
+      if (results.length > 0) onSelect(results[selectedIndex].id);
+      return;
+    }
+
+    if (key.upArrow) { setSelectedIndex((i) => Math.max(0, i - 1)); return; }
+    if (key.downArrow) { setSelectedIndex((i) => Math.min(results.length - 1, i + 1)); return; }
+
+    if (key.backspace || key.delete) {
+      setQuery((q) => q.slice(0, -1));
+      setSelectedIndex(0);
+      return;
+    }
+
+    if (input && !key.ctrl && !key.meta && input.length === 1 && input >= ' ') {
+      setQuery((q) => q + input);
+      setSelectedIndex(0);
+    }
+  });
 
   return (
     <Box flexDirection="column" paddingX={1}>
       <Box borderStyle="single" borderColor="#2A2A2A" paddingX={1}>
-        <Text color="#c4607a">search sessions</Text>
-        <Text color="#505050">                       [esc to close]</Text>
+        <Text color="#c4607a">cross-session search</Text>
+        <Text color="#505050">                [tab filter] [esc close]</Text>
+      </Box>
+
+      <Box paddingX={2} marginTop={1}>
+        {QUICK_FILTERS.map((f, i) => {
+          const active = i === quickFilterIdx;
+          return (
+            <Text
+              key={f}
+              backgroundColor={active ? '#c4607a' : undefined}
+              color={active ? '#0F0F0F' : '#505050'}
+            >
+              {' '}{f}{' '}
+            </Text>
+          );
+        })}
       </Box>
 
       <Box paddingX={2} gap={1}>
@@ -101,52 +207,33 @@ export function SearchView({ onBack, onSelect }: Props) {
         <Text color="#c4607a">_</Text>
       </Box>
 
-      {hasFilters(filters) && (
-        <Box paddingX={4} gap={1} marginBottom={1}>
-          {filters.file   && <Text color="#7EC8A0">[file:{filters.file}]</Text>}
-          {filters.skill  && <Text color="#7EB8C8">[skill:{filters.skill}]</Text>}
-          {filters.costOp && <Text color="#C8B87E">[cost:{filters.costOp}{filters.costVal}]</Text>}
-          {filters.outcome && (
-            <Text color={filters.outcome === 'failed' ? '#C87E7E' : '#7EC8A0'}>[{filters.outcome}]</Text>
-          )}
-        </Box>
-      )}
-
-      {showHint && (
-        <Box paddingX={2} marginTop={1}>
-          <Text color="#3A3A3A">  file:path   skill:name   cost:{'>'}0.50   failed   success</Text>
-        </Box>
-      )}
+      <Box paddingX={2}>
+        <Text color="#505050">cost:&gt;N  cost:&lt;N  tok:&gt;Nk  calls:&gt;N  failed  active  today  [text]</Text>
+      </Box>
 
       <Box flexDirection="column" marginTop={1} paddingX={2}>
         {results.map((session, i) => {
           const isSelected = i === selectedIndex;
-          const isOld = Date.now() - session.created_at > 7 * 24 * 60 * 60 * 1000;
+          const status = session.last_status === 'failed'
+            ? '✗ failed'
+            : session.last_status === 'running' || session.status === 'active'
+              ? '● active'
+              : '✓ done';
 
           return (
             <Box key={session.id} flexDirection="column" marginBottom={1}>
-              <Box>
-                <Text backgroundColor={isSelected ? '#c4607a' : undefined} color={isSelected ? '#0F0F0F' : '#F0F0F0'}>
-                  {isSelected ? '►' : ' '}  {session.key}   {formatRelativeTime(session.created_at)}    "{session.title}"
-                </Text>
-              </Box>
-              <Box>
-                <Text color="#505050">
-                  {'               '}{session.call_count} calls · {formatTokens(session.total_tokens)} · {session.last_status === 'running' ? '● active' : '✓ ' + (session.last_status ?? 'done')}
-                </Text>
-              </Box>
-              {isOld && (
-                <Text color="#505050">               [locked — upgrade $19/mo]</Text>
-              )}
+              <Text backgroundColor={isSelected ? '#c4607a' : undefined} color={isSelected ? '#0F0F0F' : '#F0F0F0'}>
+                {isSelected ? '►' : ' '}  {session.key}  {formatRelativeTime(session.created_at)}  "{session.title}"
+              </Text>
+              <Text color="#505050">
+                {'   '}{session.call_count} calls · {formatTokens(session.total_tokens)} · {formatCost(session.total_cost)} · {status}
+              </Text>
             </Box>
           );
         })}
-        {query && results.length === 0 && (
-          <Text color="#505050">no results</Text>
-        )}
-        {results.length > 0 && (
-          <Text color="#505050">{results.length} sessions found</Text>
-        )}
+
+        {results.length === 0 && <Text color="#505050">no results</Text>}
+        <Text color="#505050">{results.length} session{results.length === 1 ? '' : 's'} found</Text>
       </Box>
     </Box>
   );
