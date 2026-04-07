@@ -143,6 +143,29 @@ async function handleInternalRoutes(
     return true;
   }
 
+  if (pathname === '/internal/session/last-completed') {
+    // Most recent session whose last call is at least 5s old (i.e. claude has exited)
+    const cutoff = Date.now() - 5_000;
+    const session: any = db.prepare(`
+      SELECT s.* FROM sessions s
+      WHERE EXISTS (SELECT 1 FROM calls c WHERE c.session_id = s.id)
+        AND (
+          SELECT MAX(timestamp) FROM calls WHERE session_id = s.id
+        ) < ?
+      ORDER BY created_at DESC
+      LIMIT 1
+    `).get(cutoff);
+    if (!session) {
+      sendJSON(res, 200, null);
+      return true;
+    }
+    const calls: any[] = db.prepare(
+      'SELECT * FROM calls WHERE session_id = ? ORDER BY call_index ASC'
+    ).all(session.id);
+    sendJSON(res, 200, { session, calls });
+    return true;
+  }
+
   if (pathname === '/internal/session/current') {
     const { getCurrentSessionId } = await import('./sessions.js');
     const sessionId = getCurrentSessionId();
@@ -187,6 +210,81 @@ async function handleInternalRoutes(
         ORDER BY s.created_at DESC
         LIMIT 20
       `).all(q);
+      sendJSON(res, 200, rows);
+    } catch {
+      sendJSON(res, 200, []);
+    }
+    return true;
+  }
+
+  if (pathname === '/internal/search-calls') {
+    const q          = url.searchParams.get('q') ?? '';
+    const file       = url.searchParams.get('file') ?? '';
+    const skill      = url.searchParams.get('skill') ?? '';
+    const outcome    = url.searchParams.get('outcome') ?? '';
+    const costOp     = url.searchParams.get('cost_op') ?? '';
+    const costVal    = parseFloat(url.searchParams.get('cost_val') ?? 'NaN');
+    const tokensOp   = url.searchParams.get('tokens_op') ?? '';
+    const tokensVal  = parseInt(url.searchParams.get('tokens_val') ?? '0', 10);
+
+    try {
+      const conditions: string[] = [];
+      const params: any[] = [];
+
+      if (q) {
+        let ftsIds: string[] = [];
+        try {
+          ftsIds = (db.prepare(
+            `SELECT DISTINCT session_id FROM sessions_fts WHERE sessions_fts MATCH ? LIMIT 100`
+          ).all(q) as { session_id: string }[]).map((r) => r.session_id);
+        } catch { /* FTS syntax error — fall through to LIKE */ }
+
+        if (ftsIds.length > 0) {
+          conditions.push(`(c.session_id IN (${ftsIds.map(() => '?').join(',')}) OR c.summary LIKE ?)`);
+          params.push(...ftsIds, `%${q}%`);
+        } else {
+          conditions.push(`(c.summary LIKE ? OR s.title LIKE ?)`);
+          params.push(`%${q}%`, `%${q}%`);
+        }
+      }
+
+      if (file) {
+        conditions.push(`c.tool_calls LIKE ?`);
+        params.push(`%${file}%`);
+      }
+      if (skill) {
+        conditions.push(`c.skills_detected LIKE ?`);
+        params.push(`%${skill}%`);
+      }
+      if (outcome === 'failed') {
+        conditions.push(`c.status = 'error'`);
+      } else if (outcome === 'success') {
+        conditions.push(`c.status = 'success'`);
+      }
+      if ((costOp === '>' || costOp === '<') && !isNaN(costVal)) {
+        conditions.push(`c.estimated_cost_usd ${costOp} ?`);
+        params.push(costVal);
+      }
+      if ((tokensOp === '>' || tokensOp === '<') && !isNaN(tokensVal)) {
+        conditions.push(`(c.token_count_input + COALESCE(c.token_count_cache_read, 0) + c.token_count_output) ${tokensOp} ?`);
+        params.push(tokensVal);
+      }
+
+      const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+      const sql = `
+        SELECT c.id, c.session_id, c.call_index, c.timestamp, c.summary, c.status,
+               c.estimated_cost_usd, c.latency_ms, c.skills_detected,
+               c.token_count_input, c.token_count_output,
+               COALESCE(c.token_count_cache_read, 0) as token_count_cache_read,
+               s.key as session_key, s.title as session_title, s.created_at as session_created_at
+        FROM calls c
+        JOIN sessions s ON s.id = c.session_id
+        ${where}
+        ORDER BY c.timestamp DESC
+        LIMIT 50
+      `;
+
+      const rows = db.prepare(sql).all(...params);
       sendJSON(res, 200, rows);
     } catch {
       sendJSON(res, 200, []);
@@ -312,11 +410,34 @@ async function proxyToAPI(
       : '';
   const messages = reqBody.messages ?? [];
 
-  // Extract user messages for session title and signals
+  // Extract user messages for session title and signals.
+  // For the session title we want the FIRST plain-text user message —
+  // skip messages containing tool_result blocks and system-reminder wrappers.
   const userMessages = extractUserMessages(messages);
-  const lastUserMsg = userMessages.length > 0
+  let firstPlainUserMsg = '';
+  for (const m of messages) {
+    if (m.role !== 'user') continue;
+    let text = '';
+    if (typeof m.content === 'string') {
+      text = m.content;
+    } else if (Array.isArray(m.content)) {
+      if (m.content.some((b: any) => b.type === 'tool_result')) continue;
+      text = m.content
+        .filter((b: any) => b.type === 'text' && typeof b.text === 'string')
+        .map((b: any) => b.text)
+        .join('')
+        .trim();
+    }
+    text = text.trim();
+    if (!text) continue;
+    // Skip system-reminder injected messages
+    if (/^<system-reminder>/i.test(text) || /system-reminder/i.test(text.slice(0, 40))) continue;
+    firstPlainUserMsg = text.slice(0, 60);
+    break;
+  }
+  const lastUserMsg = firstPlainUserMsg || (userMessages.length > 0
     ? userMessages[userMessages.length - 1]
-    : '';
+    : '');
 
   // Detect fresh conversation: only system + 1 user message, no tool results or assistant turns
   const hasToolResult = messages.some((m: any) =>

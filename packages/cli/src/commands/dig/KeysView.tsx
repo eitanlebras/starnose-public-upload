@@ -27,7 +27,7 @@ export function KeysView({ onBack }: Props) {
   return (
     <Box flexDirection="column" paddingX={1}>
       <Box borderStyle="single" borderColor="#2A2A2A" paddingX={1} flexDirection="column">
-        <Text color="#c4607a">  starnose keybindings</Text>
+        <Text color="#e62050">  starnose keybindings</Text>
         <Text>{' '}</Text>
         {BINDINGS.map(([key, desc], i) => (
           <Text key={i} color="#A0A0A0">

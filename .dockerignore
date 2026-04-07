@@ -1,8 +1,23 @@
 .git
-node_modules
-packages
-tests
 .claude
 .env
 .DS_Store
 npm-debug.log
+**/node_modules
+**/.next
+dist
+tests
+scripts
+landing.html
+logo-mauve.html
+logo-mauve.png
+nginx.conf
+
+# Exclude workspaces we don't need; the dashboard build only requires
+# packages/dashboard plus the cli/proxy package.json files (copied
+# explicitly in the Dockerfile).
+packages/cli/src
+packages/cli/dist
+packages/proxy/src
+packages/proxy/dist
+packages/python

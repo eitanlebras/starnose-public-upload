@@ -1,0 +1,3 @@
+[console_scripts]
+snose = starnose.cli:main
+starnose = starnose.cli:main

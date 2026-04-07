@@ -24,6 +24,16 @@ async function main() {
       await commandSense();
       break;
     }
+    case 'summary': {
+      const { commandSummary } = await import('./commands/summary.js');
+      await commandSummary();
+      break;
+    }
+    case 'hook': {
+      const { commandHook } = await import('./commands/hook.js');
+      await commandHook();
+      break;
+    }
     case 'dig': {
       const { commandDig } = await import('./commands/dig/index.js');
       const sessionId = process.argv[3];
@@ -38,6 +48,8 @@ async function main() {
       console.log('  snose status   health check');
       console.log('  snose sense    live activity monitor');
       console.log('  snose dig      full interactive inspector');
+      console.log('  snose hook     print zsh hook for auto session summaries');
+      console.log('  snose summary  print summary of last completed session');
       break;
     }
   }

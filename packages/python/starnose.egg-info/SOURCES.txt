@@ -1,0 +1,10 @@
+README.md
+pyproject.toml
+setup.py
+starnose/__init__.py
+starnose/cli.py
+starnose.egg-info/PKG-INFO
+starnose.egg-info/SOURCES.txt
+starnose.egg-info/dependency_links.txt
+starnose.egg-info/entry_points.txt
+starnose.egg-info/top_level.txt

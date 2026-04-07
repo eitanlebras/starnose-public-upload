@@ -1,18 +1,32 @@
 {
   "name": "starnose",
-  "version": "0.1.0",
-  "private": true,
-  "workspaces": [
-    "packages/proxy",
-    "packages/cli",
-    "packages/dashboard"
+  "version": "0.1.2",
+  "description": "see what Claude Code is reading, thinking, and doing",
+  "type": "module",
+  "keywords": [
+    "claude",
+    "claude-code",
+    "anthropic",
+    "proxy",
+    "monitoring",
+    "ai",
+    "llm",
+    "devtools"
   ],
+  "homepage": "https://starnose.dev",
+  "license": "MIT",
   "bin": {
-    "snose": "./packages/cli/dist/index.js",
-    "starnose": "./packages/cli/dist/index.js"
+    "snose": "dist/bin.js",
+    "starnose": "dist/bin.js"
   },
+  "files": [
+    "dist/",
+    "README.md"
+  ],
   "scripts": {
-    "build": "npm run build --workspaces",
+    "build": "node scripts/build.mjs",
+    "prepublishOnly": "npm run build",
+    "build:workspace": "npm run build --workspaces",
     "build:proxy": "npm run build -w packages/proxy",
     "build:cli": "npm run build -w packages/cli",
     "build:dashboard": "npm run build -w packages/dashboard",
@@ -20,7 +34,32 @@
     "dev:proxy": "npm run dev -w packages/proxy",
     "dev:dashboard": "npm run dev -w packages/dashboard"
   },
+  "dependencies": {
+    "better-sqlite3": "^12.6.0",
+    "chalk": "^5.3.0",
+    "dotenv": "^17.4.1",
+    "eventsource": "^2.0.2",
+    "ink": "^5.1.0",
+    "ink-text-input": "^6.0.0",
+    "js-tiktoken": "^1.0.15",
+    "react": "^18.3.1",
+    "uuid": "^10.0.0"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.12",
+    "@types/node": "^22.10.0",
+    "@types/react": "^18.3.28",
+    "@types/uuid": "^10.0.0",
+    "esbuild": "^0.25.12",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0"
+  },
   "engines": {
     "node": ">=20"
-  }
+  },
+  "workspaces": [
+    "packages/proxy",
+    "packages/cli",
+    "packages/dashboard"
+  ]
 }

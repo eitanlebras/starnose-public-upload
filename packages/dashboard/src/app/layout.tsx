@@ -1,9 +1,15 @@
 import type { Metadata } from 'next';
 import './globals.css';
+import './landing.css';
 
 export const metadata: Metadata = {
   title: 'starnose',
   description: 'Claude proxy dashboard',
+  icons: {
+    icon: '/logo.svg',
+    shortcut: '/logo.svg',
+    apple: '/logo.svg',
+  },
 };
 
 export default function RootLayout({
@@ -14,30 +20,14 @@ export default function RootLayout({
   return (
     <html lang="en">
       <head>
+        <link rel="preconnect" href="https://fonts.googleapis.com" />
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="" />
         <link
-          href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap"
+          href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&family=Instrument+Serif:ital@0;1&family=DM+Sans:ital,wght@0,300;0,400;0,500;1,300&display=swap"
           rel="stylesheet"
         />
       </head>
-      <body>
-        <nav style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: '24px',
-          padding: '12px 24px',
-          borderBottom: '1px solid #2A2A2A',
-          fontSize: '12px',
-        }}>
-          <a href="/" style={{ color: '#9D7F8C', fontWeight: 600, fontSize: '14px', textDecoration: 'none' }}>
-            starnose
-          </a>
-          <a href="/" style={{ color: '#A0A0A0', textDecoration: 'none' }}>live</a>
-          <a href="/sessions" style={{ color: '#A0A0A0', textDecoration: 'none' }}>sessions</a>
-        </nav>
-        <main style={{ padding: '24px', maxWidth: '1400px', margin: '0 auto' }}>
-          {children}
-        </main>
-      </body>
+      <body>{children}</body>
     </html>
   );
 }

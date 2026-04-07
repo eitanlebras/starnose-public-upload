@@ -67,7 +67,7 @@ export function LiveView({ calls, sessionKey, onBack }: Props) {
   return (
     <Box flexDirection="column" paddingX={1}>
       <Box borderStyle="single" borderColor="#2A2A2A" paddingX={1}>
-        <Text color="#c4607a">live activity</Text>
+        <Text color="#e62050">live activity</Text>
         <Text color="#505050">                        {sessionKey}</Text>
       </Box>
 
@@ -77,9 +77,9 @@ export function LiveView({ calls, sessionKey, onBack }: Props) {
           {liveCall.toolName && <Text color="#A0A0A0">action   {liveCall.toolName}</Text>}
           <Text color="#A0A0A0">elapsed  {formatDuration(elapsed)}</Text>
           {lastSecs > 120 ? (
-            <Text color="#c4607a">status   ✗ likely stuck — consider ctrl+c</Text>
+            <Text color="#e62050">status   ✗ likely stuck — consider ctrl+c</Text>
           ) : lastSecs > 30 ? (
-            <Text color="#c4607a">status   ⚠ no activity for {lastSecs}s</Text>
+            <Text color="#e62050">status   ⚠ no activity for {lastSecs}s</Text>
           ) : (
             <Text color="#A0A0A0">status   ● alive  (activity {lastSecs}s ago)</Text>
           )}
@@ -120,7 +120,7 @@ export function LiveView({ calls, sessionKey, onBack }: Props) {
           return (
             <Box key={call.id}>
               <Text color="#505050">{circledNumber(call.call_index)}  {formatTokens(call.token_count_input).padEnd(8)}</Text>
-              <Text color={isCompaction ? '#c4607a' : '#A0A0A0'}>{bar}</Text>
+              <Text color={isCompaction ? '#e62050' : '#A0A0A0'}>{bar}</Text>
               <Text color="#505050">
                 {isPeak ? ' ⚠ peak' : isCompaction ? ' ⚡ compacted' : isLast ? ' ← now' : ''}
               </Text>

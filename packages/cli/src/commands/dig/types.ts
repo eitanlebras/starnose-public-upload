@@ -1,5 +1,23 @@
 export type ViewState = 'tree' | 'detail' | 'live' | 'flame' | 'search' | 'sessions' | 'keys';
 
+export interface SearchResult {
+  id: string;
+  session_id: string;
+  call_index: number;
+  timestamp: number;
+  summary: string;
+  status: string;
+  estimated_cost_usd: number;
+  latency_ms: number;
+  skills_detected: string;
+  token_count_input: number;
+  token_count_output: number;
+  token_count_cache_read: number;
+  session_key: string;
+  session_title: string;
+  session_created_at: number;
+}
+
 export interface CallData {
   id: string;
   session_id: string;

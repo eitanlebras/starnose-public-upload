@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Starnose — See inside Claude Code</title>
-<link rel="icon" type="image/svg+xml" href="logo.svg">
+<link rel="icon" type="image/svg+xml" href="./logo.svg">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,300;0,400;0,500;0,600;1,400&family=Instrument+Serif:ital@0;1&family=DM+Sans:ital,wght@0,300;0,400;0,500;1,300&display=swap" rel="stylesheet">
@@ -71,7 +71,7 @@
     font-family: var(--mono);
     font-size: 34px;
     font-weight: 600;
-    color: var(--text);
+    color: #ffffff;
     letter-spacing: 0.01em;
     line-height: 1;
   }
@@ -490,7 +490,7 @@
   .sense-row:nth-child(8) { animation-delay: 3.4s; }
   .sense-row:nth-child(9) { animation-delay: 3.8s; }
 
-  .s-time { color: var(--text-dim); font-size: 11px; flex-shrink: 0; }
+  .s-time { color: var(--text); font-size: 14px; font-weight: 500; flex-shrink: 0; }
   .s-badge {
     font-size: 10px;
     padding: 1px 6px;
@@ -1081,7 +1081,7 @@
 
   .footer-left {
     font-family: var(--mono);
-    font-size: 11px;
+    font-size: 16px;
     color: var(--text-dim);
     display: flex;
     align-items: center;
@@ -1095,8 +1095,8 @@
 
   .footer-links a {
     font-family: var(--mono);
-    font-size: 11px;
-    color: var(--text-dim);
+    font-size: 16px;
+    color: var(--text-muted);
     text-decoration: none;
     transition: color 0.15s;
   }
@@ -1539,8 +1539,15 @@
             <div class="daemon-step">
               <div class="daemon-step-num">1</div>
               <div>
-                <div class="daemon-step-cmd">npx starnose</div>
-                <div class="daemon-step-desc">install globally via npm</div>
+                <div class="daemon-step-cmd">npx snose on</div>
+                <div class="daemon-step-desc">Node.js — no install needed</div>
+              </div>
+            </div>
+            <div class="daemon-step">
+              <div class="daemon-step-num" style="opacity:0.4">or</div>
+              <div>
+                <div class="daemon-step-cmd">pip install starnose</div>
+                <div class="daemon-step-desc">Python — installs snose globally</div>
               </div>
             </div>
             <div class="daemon-step">
@@ -1697,7 +1704,7 @@
 <!-- ── FOOTER ─────────────────────────────────── -->
 <footer>
   <div class="footer-left">
-    <span style="font-family:var(--mono);color:var(--text-muted)">starnose</span>
+    <span style="font-family:var(--mono);color:#ffffff;font-weight:600">starnose</span>
     <span>© 2025</span>
   </div>
   <div class="footer-links">

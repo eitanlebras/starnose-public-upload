@@ -67,7 +67,7 @@ export function FlameView({ calls, sessionKey, onBack, width }: Props) {
     {
       name: 'SYSTEM PROMPT',
       tokens: systemTokens + [...skillTokensMap.values()].reduce((s, v) => s + v, 0),
-      color: '#c4607a',
+      color: '#e62050',
       children: [
         ...[...skillTokensMap.entries()].map(([name, tokens]) => ({
           name: `skill: ${name}`,
@@ -115,7 +115,7 @@ export function FlameView({ calls, sessionKey, onBack, width }: Props) {
   return (
     <Box flexDirection="column" paddingX={1}>
       <Box borderStyle="single" borderColor="#2A2A2A" paddingX={1}>
-        <Text color="#c4607a">token breakdown  {sessionKey}</Text>
+        <Text color="#e62050">token breakdown  {sessionKey}</Text>
         <Text color="#505050">           [esc to close]</Text>
       </Box>
       <Box paddingX={2}>

@@ -1,67 +1,18 @@
-import { spawn } from 'child_process';
+import { spawn, execSync } from 'child_process';
 import { existsSync, readFileSync, writeFileSync, mkdirSync, openSync, unlinkSync } from 'fs';
 import { join, resolve, dirname } from 'path';
 import { homedir } from 'os';
 import { fileURLToPath } from 'url';
-import { createInterface } from 'readline';
-import chalk from 'chalk';
-import { isProxyRunning, getPidFile, getLogFile, getUserFile, getStarnoseDir, getProxyPort, setRecording, getLaunchAgentPath } from '../api.js';
-import { normal, accent, dimmed, box } from '../format.js';
+import { isProxyRunning, getPidFile, getLogFile, getStarnoseDir, getProxyPort, setRecording, getLaunchAgentPath } from '../api.js';
+import { normal, accent, dimmed } from '../format.js';
 
-async function promptEmail(): Promise<string> {
-  const userFile = getUserFile();
-  if (existsSync(userFile)) {
-    try {
-      const data = JSON.parse(readFileSync(userFile, 'utf-8'));
-      if (data.email) return data.email;
-    } catch { /* ignore */ }
-  }
-
-  const width = Math.min(process.stdout.columns ?? 60, 60);
-  console.log(box([
-    accent('welcome to starnose'),
-    '',
-    'enter your email to activate:',
-  ], width));
-
-  return new Promise((resolve) => {
-    const rl = createInterface({ input: process.stdin, output: process.stdout });
-    rl.question(accent('  > '), (answer) => {
-      rl.close();
-      const email = answer.trim();
-      if (email) {
-        const dir = getStarnoseDir();
-        mkdirSync(dir, { recursive: true });
-        writeFileSync(userFile, JSON.stringify({ email, activatedAt: new Date().toISOString() }));
-
-        // Best-effort remote activation
-        fetch('https://starnose.dev/api/activate', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ email, version: '0.1.0' }),
-          signal: AbortSignal.timeout(5000),
-        }).catch(() => { /* ignore network failures */ });
-      }
-      resolve(email);
-    });
-  });
-}
-
-function askYesNo(question: string): Promise<boolean> {
-  return new Promise((resolve) => {
-    const rl = createInterface({ input: process.stdin, output: process.stdout });
-    rl.question(question, (answer) => {
-      rl.close();
-      resolve(answer.trim().toLowerCase().startsWith('y'));
-    });
-  });
-}
 
 function findProxyScript(): { script: string; useTsx: boolean } | null {
   const __dirname = dirname(fileURLToPath(import.meta.url));
   const proxyPaths = [
-    resolve(__dirname, '../../../proxy/dist/index.js'),
-    resolve(__dirname, '../../../proxy/src/index.ts'),
+    resolve(__dirname, './proxy.js'),                    // npm published bundle
+    resolve(__dirname, '../../../proxy/dist/index.js'),  // local monorepo build
+    resolve(__dirname, '../../../proxy/src/index.ts'),   // local monorepo dev
   ];
 
   for (const p of proxyPaths) {
@@ -174,12 +125,6 @@ export async function commandOn(): Promise<void> {
   const dir = getStarnoseDir();
   mkdirSync(dir, { recursive: true });
 
-  // Email capture on first run
-  const userFile = getUserFile();
-  if (!existsSync(userFile)) {
-    await promptEmail();
-  }
-
   // Ensure proxy is running
   const running = await ensureProxyRunning();
   if (!running) {
@@ -191,82 +136,22 @@ export async function commandOn(): Promise<void> {
   setRecording(true);
 
   const port = getProxyPort();
-  const width = Math.min(process.stdout.columns ?? 60, 60);
+  const baseUrl = `http://localhost:${port}`;
 
-  // Check if env vars are already in .zshrc
-  const zshrc = join(homedir(), '.zshrc');
-  const envLine1 = 'export ANTHROPIC_BASE_URL=http://localhost:3001';
-  const envLine2 = 'export OPENAI_BASE_URL=http://localhost:3001/v1';
-  let hasEnvVars = false;
+  // Set env vars at session level — applies to all new terminals automatically, no .zshrc needed
+  const alreadySet = process.env.ANTHROPIC_BASE_URL === baseUrl;
+  try {
+    execSync(`launchctl setenv ANTHROPIC_BASE_URL ${baseUrl}`);
+    execSync(`launchctl setenv OPENAI_BASE_URL ${baseUrl}/v1`);
+  } catch { /* not macOS or launchctl unavailable */ }
 
-  if (existsSync(zshrc)) {
-    const content = readFileSync(zshrc, 'utf-8');
-    hasEnvVars = content.includes('ANTHROPIC_BASE_URL') && content.includes('localhost:3001');
-  }
-
-  if (hasEnvVars) {
-    // Already set up — just confirm recording is on
-    const lines = [
-      accent('starnose recording'),
-      '---',
-      `proxy running on port ${port}`,
-      '',
-      `${normal('snose sense')}    →  watch it work live`,
-      `${normal('snose dig')}      →  understand every decision`,
-    ];
-    console.log(box(lines, width));
-    return;
-  }
-
-  // First-time setup: show env var instructions
-  const lines = [
-    accent('starnose started'),
-    '---',
-    'add to ~/.zshrc (once):',
-    '',
-    normal(envLine1),
-    normal(envLine2),
-    '',
-  ];
-
-  const shouldAdd = await askYesNo(
-    box(lines, width) + '\n\n  add these to ~/.zshrc automatically? (y/n) '
-  );
-
-  if (shouldAdd) {
-    const marker = '\n# starnose proxy\n';
-    const block = `${marker}${envLine1}\n${envLine2}\n`;
-
-    const existing = existsSync(zshrc) ? readFileSync(zshrc, 'utf-8') : '';
-    writeFileSync(zshrc, existing + block);
-
-    console.log('');
-    console.log(box([
-      accent('added to ~/.zshrc'),
-      '---',
-      `run ${normal('source ~/.zshrc')} or open a new terminal.`,
-      '',
-      'after that, just use claude normally.',
-      'starnose captures everything automatically.',
-      '',
-      `${normal('snose sense')}    →  watch it work live`,
-      `${normal('snose dig')}      →  understand every decision`,
-    ], width));
-  } else {
-    console.log('');
-    console.log(box([
-      'add these lines to ~/.zshrc manually:',
-      '',
-      normal(envLine1),
-      normal(envLine2),
-      '',
-      `then: ${normal('source ~/.zshrc')}`,
-      '',
-      'after that, just use claude normally.',
-      'starnose captures everything automatically.',
-      '',
-      `${normal('snose sense')}    →  watch it work live`,
-      `${normal('snose dig')}      →  understand every decision`,
-    ], width));
-  }
+  console.log();
+  console.log(`${accent('✓')} starnose daemon started on :${port}`);
+  console.log(`${accent('✓')} ANTHROPIC_BASE_URL=${baseUrl}`);
+  console.log(`  ${dimmed('recording to ~/.starnose/starnose.db')}`);
+  console.log();
+  console.log(`  ${accent('→')} ${normal('snose sense')}    ${dimmed('watch live')}`);
+  console.log(`  ${accent('→')} ${normal('snose dig')}      ${dimmed('inspect after')}`);
+  console.log();
+  void alreadySet;
 }

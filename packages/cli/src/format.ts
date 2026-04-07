@@ -2,12 +2,12 @@ import chalk from 'chalk';
 
 const normal = chalk.hex('#F0F0F0');
 const dimmed = chalk.hex('#505050');
-const accent = chalk.hex('#c4607a');
+const accent = chalk.ansi256(204);
 const secondary = chalk.hex('#A0A0A0');
 
 export { normal, dimmed, accent, secondary };
 
-export const selected = chalk.bgHex('#c4607a').hex('#0F0F0F');
+export const selected = chalk.bgAnsi256(204).hex('#0F0F0F');
 export const warning = accent;
 
 export function formatTokens(n: number): string {
