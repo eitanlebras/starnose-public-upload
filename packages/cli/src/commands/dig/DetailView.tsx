@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Box, Text, useInput } from 'ink';
+import { Box, Text } from 'ink';
 import { CallData } from './types.js';
 import { formatTokens, formatCost, formatLatency, circledNumber } from '../../format.js';
 
@@ -173,33 +173,7 @@ export function DetailView({ call, prevCall, isSimilarToPrev, width }: Props) {
     s => !FORCE_COLLAPSED.includes(s),
   );
   const [expandedSections, setExpandedSections] = useState<Set<SectionKey>>(new Set(initialExpanded));
-  const [sectionCursor, setSectionCursor] = useState(0);
-
-  useInput((_input, key) => {
-    if (key.tab && prevCall) {
-      setViewMode(m => m === 'delta' ? 'full' : 'delta');
-      return;
-    }
-    if (viewMode !== 'full') return;
-    if (key.upArrow) setSectionCursor(c => Math.max(0, c - 1));
-    else if (key.downArrow) setSectionCursor(c => Math.min(SECTION_ORDER.length - 1, c + 1));
-    else if (key.rightArrow || key.return) {
-      const sec = SECTION_ORDER[sectionCursor];
-      if (FORCE_COLLAPSED.includes(sec)) return;
-      setExpandedSections(prev => {
-        const next = new Set(prev);
-        next.add(sec);
-        return next;
-      });
-    } else if (key.leftArrow) {
-      const sec = SECTION_ORDER[sectionCursor];
-      setExpandedSections(prev => {
-        const next = new Set(prev);
-        next.delete(sec);
-        return next;
-      });
-    }
-  });
+  const sectionCursor = -1;
 
   // ─── Bash loop detection ───
   const bashCalls = toolCalls.filter(tc => normalizeToolName(tc.toolName) === 'Bash');
@@ -577,7 +551,7 @@ export function DetailView({ call, prevCall, isSimilarToPrev, width }: Props) {
         const isCursor = i === sectionCursor;
         const arrow = isExpanded ? '▼' : '►';
         const isMissingWithContent = sec === 'missing' && realMissing.length > 0;
-        const headerColor = isMissingWithContent || isCursor ? '#e62050' : '#707070';
+        const headerColor = isMissingWithContent ? '#e62050' : '#707070';
 
         return (
           <Box key={sec} flexDirection="column">
@@ -595,7 +569,7 @@ export function DetailView({ call, prevCall, isSimilarToPrev, width }: Props) {
       })}
       <Text> </Text>
       <Text color="#505050">
-        ↑↓ section · → expand · ← collapse{prevCall ? ' · tab delta' : ''}
+        detail panel is read-only
       </Text>
     </Box>
   );
