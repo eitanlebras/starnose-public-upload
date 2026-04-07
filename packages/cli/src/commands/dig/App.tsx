@@ -179,6 +179,14 @@ export function App({ initialSessionId }: AppProps) {
         </Box>
       )}
 
+      {view === 'tree' && (
+        <Box paddingX={1} marginTop={1}>
+          <Text backgroundColor="#e62050" color="#0F0F0F">
+            {'  SESSIONS HUB  ·  press s  ·  browse every run, filter, sort, reopen  '}
+          </Text>
+        </Box>
+      )}
+
       {/* Views */}
       {view === 'tree' && (
         <TreeView
@@ -230,7 +238,7 @@ export function App({ initialSessionId }: AppProps) {
       {view === 'tree' && (
         <Box paddingX={1}>
           <Text color="#505050">
-            ↑↓ nav · ←→ group · s sessions · / search · q quit
+            s sessions hub · / search · ↑↓ nav · ←→ group · q quit
           </Text>
         </Box>
       )}
