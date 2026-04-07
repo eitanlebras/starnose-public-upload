@@ -30,6 +30,6 @@ def main():
     if local:
         cmd = ["node", local] + args
     else:
-        cmd = ["npx", "--yes", "snose"] + args
+        cmd = ["npx", "--yes", "starnose"] + args
     result = subprocess.run(cmd, env={**os.environ})
     sys.exit(result.returncode)

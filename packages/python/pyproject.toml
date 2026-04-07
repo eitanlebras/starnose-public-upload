@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "starnose"
-version = "0.1.2"
+version = "0.1.3"
 description = "See what Claude Code is doing"
 requires-python = ">=3.8"
 
