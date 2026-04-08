@@ -1,6 +1,6 @@
 {
   "name": "starnose",
-  "version": "0.1.2",
+  "version": "0.1.4",
   "description": "see what Claude Code is reading, thinking, and doing",
   "type": "module",
   "keywords": [
